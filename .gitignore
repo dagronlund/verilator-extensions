@@ -1,0 +1,4 @@
+/target/
+/verilator-rust/build/
+/tests/*/build/
+/tests/*/build-release/

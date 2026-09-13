@@ -1,0 +1,14 @@
+builddir = build
+
+rule prepare
+  command = mkdir -p build && rm -f build/*_sampled.tree.json build/ast.json && touch $out
+  description = PREPARE $out
+
+rule verilate
+  command = verilator --cc -fno-table --dump-tree-json --coverage-user --formal-wires --top-module public_submodules --Mdir build tb.sv && cp build/*_sampled.tree.json build/ast.json && touch $out
+  description = VERILATE $in
+
+build build/.prepared: prepare tb.sv
+build build/.verilated: verilate tb.sv | build/.prepared
+
+default build/.verilated

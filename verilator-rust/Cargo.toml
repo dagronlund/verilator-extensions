@@ -1,0 +1,12 @@
+[package]
+name = "verilator-rust"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+verilator-parser = { path = "../verilator-parser" }
+
+[lints]
+workspace = true
