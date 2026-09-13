@@ -231,7 +231,9 @@ impl FsmOps for FSM {
         let mut level = value.to_vec();
         for &select in index {
             level = level
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .into_iter()
                 .map(|pair| FsmOps::create_mux_gate(self, pair[0], pair[1], select))
                 .collect();
         }

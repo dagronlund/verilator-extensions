@@ -1500,3 +1500,46 @@ fn output_word(simulator: &Simulator) -> u64 {
         word | ((simulator.get_output(index).unwrap() as u64) << index)
     })
 }
+
+#[test]
+fn unlowered_nonblocking_assignments_preserve_scheduling() {
+    let model = load_model("nba_semantics");
+    // Columns: a, b, pipeline, packed_value, temp_result, mem0, mem1,
+    // blocking_count, lane0, lane1, after each clock edge.
+    let trace = include_str!("../../tests/nba_semantics/expected.txt");
+    assert_eq!(trace.lines().count(), 32);
+    let mut simulator = Simulator::from(model.fsm.clone());
+    assert!(!signal_names(&model.registers).contains(&"temporary"));
+    assert!(!signal_names(&model.registers).contains(&"address"));
+    for (step, line) in trace.lines().enumerate() {
+        set_input(&model, &mut simulator, "reset_n", step != 0 && step != 17);
+        set_input(&model, &mut simulator, "enable", step % 4 != 2);
+        set_input(&model, &mut simulator, "index", step & 1 != 0);
+        set_input_word(&model, &mut simulator, "data", ((step * 19) & 255) as u64);
+        simulator.eval();
+        simulator.step();
+        simulator.eval();
+        for (name, expected) in [
+            "a",
+            "b",
+            "pipeline",
+            "packed_value",
+            "temp_result",
+            "mem0",
+            "mem1",
+            "blocking_count",
+            "lane0",
+            "lane1",
+        ]
+        .into_iter()
+        .zip(line.split_whitespace())
+        {
+            assert_eq!(
+                output_signal_word(&model, &simulator, name),
+                expected.parse::<u64>().unwrap(),
+                "step {step}, output {name}"
+            );
+        }
+        verify_all_assertions(&model, &simulator);
+    }
+}

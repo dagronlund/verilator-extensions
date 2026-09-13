@@ -1,8 +1,30 @@
 # verilator-extensions
 
 `verilator-extensions` is a Cargo workspace for parsing Verilator JSON ASTs,
-converting them to AIGER, and generating standalone Rust simulators. It contains
-the following crates:
+converting them to AIGER, and generating standalone Rust simulators.
+
+Run this example from the repository root with a Verilator build supporting
+`-fno-delayed`, `--ast-pre-codegen`, and `--sva-preserve`:
+
+```sh
+# Generate the JSON AST from the counter fixture.
+mkdir -p build
+verilator --cc -fno-table -fno-delayed --coverage-user --sva-preserve \
+  --top-module counter --Mdir build/counter-verilator \
+  --ast-pre-codegen build/counter.json tests/counter/tb.sv
+
+# Convert the same JSON AST to AIGER.
+cargo run -p verilator-formal -- build/counter.json \
+  --clock clk --reset '!reset_n' --output build/counter.aig
+
+# Generate a Rust simulator library from the same JSON AST.
+cargo run -p verilator-rust -- build/counter.json \
+  --clock clk --output build/generated-counter --crate-name generated-counter
+```
+
+The generated Rust project directory must be new or empty.
+
+The workspace contains the following crates:
 
 - `verilator-parser` parses and validates JSON into an owned, strongly typed
   Rust AST. It is independent of the FSM representation.
@@ -31,7 +53,8 @@ Verilator fixture, and run all Cargo workspace tests. Additional arguments are
 passed to `cargo test`.
 
 Each regression fixture contains its SystemVerilog sources and a Ninja build.
-Use a Verilator build that supports `--sva-preserve` and `--ast-pre-codegen`.
+Use a Verilator build that supports `--sva-preserve`, `--ast-pre-codegen`, and
+`-fno-delayed`.
 To rebuild a single fixture, run Ninja in its directory, for example:
 
 ```sh
@@ -39,11 +62,14 @@ ninja -C tests/counter
 ```
 
 Each Ninja build keeps all Verilator output in its local `build/` directory and
-uses `--ast-pre-codegen build/ast.json` to write the JSON AST directly before
+uses `-fno-delayed --ast-pre-codegen build/ast.json` to write the JSON AST before
 scheduling and C++ generation. The Rust tests invoke Ninja once per fixture and
 validate the stable AST. Missing or invalid cached ASTs are cleaned and rebuilt
 once automatically. Gecko's simulator targets separately generate C++ before
-compiling the simulator.
+compiling the simulator; those C++ generation commands must omit `-fno-delayed`.
+ASTs containing lowered NBA phases are rejected with instructions to regenerate
+them. The AST does not record command-line provenance, so a tree without NBA
+operations cannot always be distinguished from one generated without the flag.
 
 Convert the tree, print a concise named FSM summary, and optionally write
 AIGER 1.9. The output extension selects ASCII `.aag` or binary `.aig`:
@@ -129,13 +155,27 @@ are initialized to zero, matching Verilator's initialization convention. Their
 explicit zero-valued `INITIALSTATIC` assignments are accepted by AIGER conversion;
 other initial blocks remain unsupported.
 
-Verilator's sampled and delayed nodes are interpreted as follows:
+The parser preserves `ASSIGNDLY` as `AssignmentKind::Nonblocking`. Both backends
+implement its scheduling directly:
 
-- A variable marked `sampled` aliases the pre-edge expression in its `valuep`.
-- `ALWAYSPRE`, `ASSIGNDLY`, and `ALWAYSPOST` identify the NBA shadow and
-  register commit pattern.
-- Blocking and nonblocking assignments are symbolically executed, and `IF`
-  branches are merged with `verilator-formal` mux operations.
+- Sampled expressions are captured before executing clocked processes.
+- Blocking assignments update the execution environment immediately.
+- Nonblocking assignments evaluate their RHS and destination indices when the
+  statement executes, and accumulate updates separately from readable values.
+- All pending updates commit after all clocked processes finish. Unwritten bits
+  retain their values; later overlapping writes within one process take priority.
+- Conditional updates become muxes in the formal model and branches in Rust.
+
+State is identified from clocked writes and blocking values that must persist
+between edges; blocking temporaries assigned before use need no registers.
+The typed AST no longer contains NBA shadow-register pairs or pre/post lowering
+phases. Previously serialized RON designs must be regenerated.
+
+Mixed blocking/nonblocking writes to the same variable, overlapping writes from
+multiple clocked processes, and cross-process reads of blocking-written variables
+are rejected. Separate processes may write statically disjoint bit lanes, including
+lanes of dynamically indexed memories. Nonblocking assignments outside clocked
+processes are unsupported.
 
 Formal properties use the durable `__Vsva_*` variables. Assert wires are
 violation indicators and are inverted before being added as FSM assertions;
@@ -224,9 +264,9 @@ no third-party dependencies.
 
 Generated libraries expose `Model`, `Inputs`, `Outputs`, `State`, and
 `Evaluation`. `Model::eval` observes combinational outputs and properties
-without changing state. `Model::tick` executes the pre-edge, sequential, and
-post-edge phases, commits Verilator NBA shadow registers, and returns the
-post-edge evaluation:
+without changing state. `Model::tick` captures pre-edge sampled values, executes
+clocked processes,
+commits pending nonblocking updates, and returns the post-edge evaluation:
 
 ```rust
 use generated_counter::{Inputs, Model};
@@ -257,7 +297,7 @@ common value type are exposed as one Rust array field with the suffix removed.
 Unsupported constructs produce conversion errors with the Verilator node type
 and source location. The initial boundary excludes multiple or asynchronous
 clock domains, unsupported partial writes, combinational cycles, and multiple
-drivers.
+overlapping drivers.
 
 AIGER Export
 ------------

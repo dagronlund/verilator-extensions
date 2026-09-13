@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -8,8 +9,9 @@ use num_bigint::BigUint;
 
 use crate::{
     ast::{
-        DataTypeKind, Design, Direction, Edge, PropertyKind, VariableId, VariableKind,
-        collect::CollectAccesses, range::Range,
+        AssignmentKind, BlockKind, DataTypeKind, Design, Direction, Edge, PropertyKind, Statement,
+        StatementKind, VariableId, VariableKind, collect::CollectAccesses, range::Range,
+        sequential,
     },
     document::AstDocument,
 };
@@ -238,7 +240,8 @@ fn typed_ast_round_trips_through_ron() {
     let deserialized: Design = ron::from_str(&serialized).unwrap();
 
     assert_eq!(deserialized, design);
-    assert!(serialized.contains("shadow_registers"));
+    assert!(serialized.contains("Nonblocking"));
+    assert!(!serialized.contains("shadow_registers"));
 }
 
 #[test]
@@ -373,9 +376,8 @@ fn fixed_width_dtype_fixture_preserves_structural_metadata() {
             _ => false,
         }
     }));
-    let matrix_dtype = design
-        .data_types
-        .iter()
+    let matrix_dtype = (&design.data_types)
+        .into_iter()
         .position(|dtype| dtype.name.as_deref() == Some("matrix_t"))
         .map(crate::ast::DataTypeId)
         .unwrap();
@@ -416,9 +418,8 @@ fn fixed_width_dtype_fixture_preserves_structural_metadata() {
     assert_eq!(design.data_type_rank(inner), 4);
     assert_eq!(design.data_type_rank(outer), 5);
     assert_eq!(design.data_type_rank(matrix_dtype), 5);
-    let matrix_variable = design
-        .variables
-        .iter()
+    let matrix_variable = (&design.variables)
+        .into_iter()
         .position(|variable| variable.display_name() == "matrix_value")
         .map(VariableId)
         .unwrap();
@@ -467,9 +468,8 @@ fn combinational_array_assignments_report_block_accesses() {
     assert_eq!(design.combinational.len(), 2);
 
     let variable_id = |name| {
-        design
-            .variables
-            .iter()
+        (&design.variables)
+            .into_iter()
             .position(|variable| variable.display_name() == name)
             .map(VariableId)
             .unwrap()
@@ -525,4 +525,103 @@ fn find_ast(directory: &Path) -> Result<PathBuf, String> {
     AstDocument::from_path(&path)
         .map_err(|error| format!("AST {} is invalid: {error}", path.display()))?;
     Ok(path)
+}
+
+#[test]
+fn rejects_verilator_lowered_nba_ast() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/counter");
+    let output =
+        std::env::temp_dir().join(format!("verilator-parser-lowered-{}", std::process::id()));
+    fs::create_dir_all(&output).unwrap();
+    let ast = output.join("ast.json");
+    let status = Command::new("verilator")
+        .args([
+            "--cc",
+            "-fno-table",
+            "--coverage-user",
+            "--sva-preserve",
+            "--top-module",
+            "counter",
+            "--ast-pre-codegen",
+        ])
+        .arg(&ast)
+        .arg("--Mdir")
+        .arg(&output)
+        .arg(fixture.join("tb.sv"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let document = AstDocument::from_path(ast).unwrap();
+    let error = Design::try_from(&document).unwrap_err().to_string();
+    assert!(error.contains("lowered NBA AST"), "{error}");
+    assert!(error.contains("-fno-delayed"), "{error}");
+    fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn rejects_conflicting_and_out_of_phase_nonblocking_writes() {
+    let document = AstDocument::from_path(build_fixture("nba_semantics")).unwrap();
+    let design = Design::try_from(&document).unwrap();
+    let mut conflicting = design.clone();
+    conflicting.sequential.push(design.sequential[0].clone());
+    assert!(
+        sequential::analyze(&conflicting)
+            .unwrap_err()
+            .contains("overlapping bits")
+    );
+
+    let assignment = first_nonblocking(&design.sequential).unwrap();
+    let mut blocking = assignment.clone();
+    if let StatementKind::Assignment { kind, .. } = &mut blocking.kind {
+        *kind = AssignmentKind::Blocking;
+    }
+    let mut mixed = design.clone();
+    mixed.sequential = vec![Statement {
+        source: assignment.source.clone(),
+        kind: StatementKind::Block {
+            kind: BlockKind::Always,
+            statements: vec![assignment.clone(), blocking],
+        },
+    }];
+    assert!(
+        sequential::analyze(&mixed)
+            .unwrap_err()
+            .contains("mixed blocking and nonblocking")
+    );
+
+    let mut outside = design;
+    outside.initial.push(assignment);
+    assert!(
+        sequential::analyze(&outside)
+            .unwrap_err()
+            .contains("outside clocked processes")
+    );
+}
+
+fn first_nonblocking(statements: &[Statement]) -> Option<Statement> {
+    for statement in statements {
+        match &statement.kind {
+            StatementKind::Assignment { kind, .. } if *kind == AssignmentKind::Nonblocking => {
+                return Some(statement.clone());
+            }
+            StatementKind::Block { statements, .. } => {
+                if let Some(statement) = first_nonblocking(statements) {
+                    return Some(statement);
+                }
+            }
+            StatementKind::If {
+                then_statements,
+                else_statements,
+                ..
+            } => {
+                if let Some(statement) = first_nonblocking(then_statements)
+                    .or_else(|| first_nonblocking(else_statements))
+                {
+                    return Some(statement);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }

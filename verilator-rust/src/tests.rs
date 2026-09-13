@@ -259,8 +259,7 @@ fn eval_and_tick_once() {
         }
         if fixture == "gecko_core" {
             let source = fs::read_to_string(output.join("src/state.rs")).unwrap();
-            assert!(source.contains("_vdlyval_data: [bool; 59],"));
-            assert!(!source.contains("_vdlyval_data_v0:"));
+            assert!(!source.contains("_vdly"));
         }
     }
 }
@@ -325,5 +324,65 @@ fn refuses_to_overwrite_a_nonempty_directory() {
         fs::read_to_string(output.join("keep")).unwrap(),
         "user data"
     );
+    fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn unlowered_nonblocking_assignments_preserve_scheduling() {
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/nba_semantics");
+    let status = Command::new("ninja")
+        .arg("-C")
+        .arg(&directory)
+        .arg("build/.verilated")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let document = AstDocument::from_path(directory.join("build/ast.json")).unwrap();
+    let design = Design::try_from(&document).unwrap();
+    let output =
+        std::env::temp_dir().join(format!("verilator-rust-nba-test-{}", std::process::id()));
+    replace_generated_project(
+        &design,
+        &output,
+        &GenerateOptions {
+            crate_name: "generated-nba".into(),
+            clock: Domain::new("clk", Edge::Positive),
+            reset: None,
+        },
+    )
+    .unwrap();
+    fs::create_dir_all(output.join("tests")).unwrap();
+    fs::copy(
+        directory.join("expected.txt"),
+        output.join("tests/expected.txt"),
+    )
+    .unwrap();
+    fs::write(output.join("tests/semantics.rs"), r#"
+use generated_nba::{Inputs, Model};
+
+#[test]
+fn preserves_nonblocking_scheduling() {
+    assert_eq!(include_str!("expected.txt").lines().count(), 32);
+    let mut model = Model::new();
+    for (step, line) in include_str!("expected.txt").lines().enumerate() {
+        let inputs = Inputs { reset_n: step != 0 && step != 17,
+            enable: step % 4 != 2, index: step & 1 != 0, data: ((step * 19) & 255) as u8 };
+        let evaluation = model.tick(&inputs);
+        let actual = evaluation.outputs;
+        let expected: Vec<u8> = line.split_whitespace().map(|word| word.parse().unwrap()).collect();
+        assert_eq!([actual.a, actual.b, actual.pipeline, actual.packed_value, actual.temp_result,
+            actual.mem0, actual.mem1, actual.blocking_count, actual.lane0, actual.lane1].as_slice(), expected.as_slice(), "step {step}");
+        assert!(evaluation.assertions.assert_pipeline, "pipeline assertion, step {step}");
+        assert!(evaluation.assertions.assert_sampled_blocking, "sampled assertion, step {step}");
+        assert_eq!(model.eval(&inputs).outputs, actual);
+    }
+}
+"#).unwrap();
+    let status = Command::new("cargo")
+        .args(["test", "--quiet"])
+        .current_dir(&output)
+        .status()
+        .unwrap();
+    assert!(status.success());
     fs::remove_dir_all(output).unwrap();
 }

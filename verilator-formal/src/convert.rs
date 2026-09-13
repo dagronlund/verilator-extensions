@@ -1,10 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    mem,
+};
 
 use verilator_parser::{
     ast::{
-        AssignmentTarget, BinaryOperator, DataType, Design, Direction, Domain, Edge, Expression,
-        ExpressionKind, PropertyKind, SignalDomain, Statement, StatementKind, UnaryOperator,
-        Variable, VariableId, VariableKind, collect::CollectAccesses,
+        AssignmentKind, AssignmentTarget, BinaryOperator, DataType, Design, Direction, Domain,
+        Edge, Expression, ExpressionKind, PropertyKind, SignalDomain, SourceInfo, Statement,
+        StatementKind, UnaryOperator, Variable, VariableId, VariableKind, collect::CollectAccesses,
+        sequential,
     },
     document::AstDocument,
 };
@@ -69,6 +73,7 @@ struct Converter<'a> {
     clock: SignalDomain,
     reset: Option<SignalDomain>,
     fsm: FSM,
+    pending: Environment,
 }
 
 impl TryFrom<&Design> for NamedFsm {
@@ -81,6 +86,7 @@ impl TryFrom<&Design> for NamedFsm {
             clock,
             reset,
             fsm: FSM::default(),
+            pending: Environment::new(),
         }
         .convert()
     }
@@ -98,6 +104,7 @@ impl NamedFsm {
             clock,
             reset,
             fsm: FSM::default(),
+            pending: Environment::new(),
         }
         .convert()
     }
@@ -254,9 +261,7 @@ impl Converter<'_> {
         }
         let all_statements = (&self.design.combinational)
             .into_iter()
-            .chain(&self.design.pre_edge)
             .chain(&self.design.sequential)
-            .chain(&self.design.post_edge)
             .cloned()
             .collect::<Vec<_>>();
         let mut reads = BTreeSet::new();
@@ -279,19 +284,18 @@ impl Converter<'_> {
             }
         }
 
-        let mut register_ids = (&self.design.shadow_registers)
-            .into_iter()
-            .map(|(_, register)| *register)
-            .collect::<BTreeSet<_>>();
+        let sequential = sequential::analyze(self.design).map_err(ConvertError::message)?;
+        let mut register_ids = sequential.registers.clone();
+        // Preserve the existing unpacked-array storage model for procedural
+        // combinational element writes, which read the untouched elements.
         register_ids.extend(
             (&self.design.variables)
                 .into_iter()
                 .enumerate()
                 .filter(|(index, variable)| {
-                    let id = VariableId(*index);
                     self.design.data_type(variable.dtype).unpacked.is_some()
-                        && reads.contains(&id)
-                        && writes.contains(&id)
+                        && reads.contains(&VariableId(*index))
+                        && writes.contains(&VariableId(*index))
                 })
                 .map(|(index, _)| VariableId(index)),
         );
@@ -344,47 +348,34 @@ impl Converter<'_> {
             registers.push(signal);
         }
 
-        for (shadow, register) in &self.design.shadow_registers {
-            let current = environment.get(register).cloned().ok_or_else(|| {
-                ConvertError::message(format!(
-                    "missing current value for register {}",
-                    self.design.variable(*register).display_name()
-                ))
-            })?;
-            environment.insert(*shadow, current);
-        }
-
         self.execute_combinational(&self.design.combinational, &mut environment)?;
-        self.execute_all(&self.design.pre_edge, &mut environment)?;
-        self.execute_all(&self.design.sequential, &mut environment)?;
-        self.execute_all(&self.design.post_edge, &mut environment)?;
-
-        for (shadow, register) in &self.design.shadow_registers {
-            let next = environment.get(shadow).ok_or_else(|| {
-                ConvertError::message(format!(
-                    "shadow variable {} has no next value",
-                    self.design.variable(*shadow).display_name()
-                ))
-            })?;
-            let outputs = register_variables.get(register).unwrap();
-            self.add_latches(*register, outputs, next)?;
-        }
-        for (register, outputs) in &register_variables {
-            if (&self.design.shadow_registers)
-                .into_iter()
-                .any(|(_, candidate)| candidate == register)
-            {
-                continue;
+        // Freeze sampled expressions before any clocked blocking assignments run.
+        let before_edge = environment.clone();
+        for (index, variable) in (&self.design.variables).into_iter().enumerate() {
+            if let Some(sampled) = &variable.sampled_value {
+                let value = self.expression(sampled, &before_edge)?;
+                environment.insert(VariableId(index), value);
             }
-            let next = environment.get(register).ok_or_else(|| {
-                ConvertError::message(format!(
-                    "register {} has no next value",
-                    self.design.variable(*register).display_name()
-                ))
-            })?;
-            self.add_latches(*register, outputs, next)?;
+        }
+        for id in &sequential.nonblocking {
+            self.pending.insert(*id, environment[id].clone());
+        }
+        self.execute_all(&self.design.sequential, &mut environment)?;
+        for (register, outputs) in &register_variables {
+            let next = self
+                .pending
+                .get(register)
+                .or_else(|| environment.get(register))
+                .cloned()
+                .ok_or_else(|| ConvertError::message("register has no next value"))?;
+            self.add_latches(*register, outputs, &next)?;
         }
 
+        // Outputs describe the current FSM state; blocking procedural writes
+        // above compute next-state values, just like deferred NBA writes.
+        for id in &sequential.registers {
+            environment.insert(*id, register_variables[id].clone());
+        }
         let mut outputs = Vec::new();
         for (index, variable) in (&self.design.variables).into_iter().enumerate() {
             if variable.direction != Direction::Output {
@@ -490,9 +481,21 @@ impl Converter<'_> {
     ) -> Result<(), ConvertError> {
         match &statement.kind {
             StatementKind::Block { statements, .. } => self.execute_all(statements, environment),
-            StatementKind::Assignment { target, value, .. } => {
+            StatementKind::Assignment {
+                kind,
+                target,
+                value,
+            } => {
                 let value = self.expression(value, environment)?;
-                self.assign(target, value, environment)
+                if *kind == AssignmentKind::Nonblocking {
+                    let mut pending = mem::take(&mut self.pending);
+                    let result = self.assign(target, value, &mut pending, environment);
+                    self.pending = pending;
+                    result
+                } else {
+                    let evaluation = environment.clone();
+                    self.assign(target, value, environment, &evaluation)
+                }
             }
             StatementKind::If {
                 condition,
@@ -502,48 +505,74 @@ impl Converter<'_> {
                 let condition_value = self.expression(condition, environment)?;
                 let condition = self.truthy(&condition_value);
                 let before = environment.clone();
+                let pending_before = self.pending.clone();
                 let mut then_environment = before.clone();
                 self.execute_all(then_statements, &mut then_environment)?;
+                let then_pending = mem::replace(&mut self.pending, pending_before);
                 let mut else_environment = before.clone();
                 self.execute_all(else_statements, &mut else_environment)?;
-                let keys = then_environment
-                    .keys()
-                    .chain(else_environment.keys())
-                    .copied()
-                    .collect::<BTreeSet<_>>();
-                for key in keys {
-                    let width = self
-                        .design
-                        .variables
-                        .get(key.0)
-                        .map_or(0, |variable| self.design.data_type(variable.dtype).width);
-                    let default = vec![Value::Constant(false); width];
-                    let then_value = then_environment
-                        .get(&key)
-                        .or_else(|| before.get(&key))
-                        .unwrap_or(&default);
-                    let else_value = else_environment
-                        .get(&key)
-                        .or_else(|| before.get(&key))
-                        .unwrap_or(&default);
-                    if then_value == else_value {
-                        environment.insert(key, then_value.clone());
-                    } else {
-                        if then_value.len() != else_value.len() {
-                            return Err(ConvertError::source(
-                                &statement.source,
-                                "IF branch width mismatch",
-                            ));
-                        }
-                        environment.insert(
-                            key,
-                            FsmOps::create_mux(&mut self.fsm, else_value, then_value, condition),
-                        );
-                    }
-                }
+                let else_pending = mem::take(&mut self.pending);
+                self.pending = self.merge_environments(
+                    &statement.source,
+                    condition,
+                    &then_pending,
+                    &else_pending,
+                    &Environment::new(),
+                )?;
+                *environment = self.merge_environments(
+                    &statement.source,
+                    condition,
+                    &then_environment,
+                    &else_environment,
+                    &before,
+                )?;
                 Ok(())
             }
         }
+    }
+
+    fn merge_environments(
+        &mut self,
+        source: &SourceInfo,
+        condition: Value,
+        then_environment: &Environment,
+        else_environment: &Environment,
+        before: &Environment,
+    ) -> Result<Environment, ConvertError> {
+        let mut environment = Environment::new();
+        let keys = then_environment
+            .keys()
+            .chain(else_environment.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for key in keys {
+            let width = self
+                .design
+                .variables
+                .get(key.0)
+                .map_or(0, |variable| self.design.data_type(variable.dtype).width);
+            let default = vec![Value::Constant(false); width];
+            let then_value = then_environment
+                .get(&key)
+                .or_else(|| before.get(&key))
+                .unwrap_or(&default);
+            let else_value = else_environment
+                .get(&key)
+                .or_else(|| before.get(&key))
+                .unwrap_or(&default);
+            if then_value == else_value {
+                environment.insert(key, then_value.clone());
+            } else {
+                if then_value.len() != else_value.len() {
+                    return Err(ConvertError::source(source, "IF branch width mismatch"));
+                }
+                environment.insert(
+                    key,
+                    FsmOps::create_mux(&mut self.fsm, else_value, then_value, condition),
+                );
+            }
+        }
+        Ok(environment)
     }
 
     fn assign(
@@ -551,6 +580,7 @@ impl Converter<'_> {
         target: &AssignmentTarget,
         value: Vec<Value>,
         environment: &mut Environment,
+        evaluation: &Environment,
     ) -> Result<(), ConvertError> {
         match target {
             AssignmentTarget::Variable { variable, .. } => {
@@ -570,7 +600,7 @@ impl Converter<'_> {
                 width,
                 ..
             } => {
-                let target_value = self.read_target(target, environment)?;
+                let target_value = self.read_target(target, environment, evaluation)?;
                 if value.len() != *width || *width > target_value.len() {
                     return Err(ConvertError::source(
                         &offset.source,
@@ -581,9 +611,9 @@ impl Converter<'_> {
                     let offset = usize::try_from(&literal.value).unwrap();
                     let mut result = target_value;
                     result[offset..offset + width].copy_from_slice(&value);
-                    return self.assign(target, result, environment);
+                    return self.assign(target, result, environment, evaluation);
                 }
-                let offset_value = self.expression(offset, environment)?;
+                let offset_value = self.expression(offset, evaluation)?;
                 let mut result = target_value.clone();
                 for candidate_offset in 0..=target_value.len() - width {
                     let candidate_value = usize_values(candidate_offset, offset_value.len());
@@ -592,7 +622,7 @@ impl Converter<'_> {
                     candidate[candidate_offset..candidate_offset + width].copy_from_slice(&value);
                     result = self.mux_without_or(&result, &candidate, selected);
                 }
-                self.assign(target, result, environment)
+                self.assign(target, result, environment, evaluation)
             }
             AssignmentTarget::ArrayElement {
                 array,
@@ -606,8 +636,8 @@ impl Converter<'_> {
                         "ARRAYSEL assignment width mismatch",
                     ));
                 }
-                let index_value = self.expression(index, environment)?;
-                let current = self.read_target(array, environment)?;
+                let index_value = self.expression(index, evaluation)?;
+                let current = self.read_target(array, environment, evaluation)?;
                 let mut result = current.clone();
                 for (offset, declared_index) in layout.indices.into_iter().enumerate() {
                     let candidate =
@@ -618,7 +648,7 @@ impl Converter<'_> {
                     updated[start..start + layout.element_width].copy_from_slice(&value);
                     result = self.mux_without_or(&result, &updated, selected);
                 }
-                self.assign(array, result, environment)
+                self.assign(array, result, environment, evaluation)
             }
         }
     }
@@ -627,6 +657,7 @@ impl Converter<'_> {
         &mut self,
         target: &AssignmentTarget,
         environment: &Environment,
+        evaluation: &Environment,
     ) -> Result<Vec<Value>, ConvertError> {
         match target {
             AssignmentTarget::Variable { variable, .. } => {
@@ -641,16 +672,16 @@ impl Converter<'_> {
                 let AssignmentTarget::Select { target, .. } = target else {
                     unreachable!()
                 };
-                let source = self.read_target(target, environment)?;
-                self.select_value(source, offset, *width, environment)
+                let source = self.read_target(target, environment, evaluation)?;
+                self.select_value(source, offset, *width, evaluation)
             }
             AssignmentTarget::ArrayElement {
                 array,
                 index,
                 dtype,
             } => {
-                let source = self.read_target(array, environment)?;
-                self.array_select_value(source, index, self.design.data_type(*dtype), environment)
+                let source = self.read_target(array, environment, evaluation)?;
+                self.array_select_value(source, index, self.design.data_type(*dtype), evaluation)
             }
         }
     }
@@ -1054,7 +1085,7 @@ impl Converter<'_> {
         let mut level = values.to_vec();
         for &select in index {
             let mut next = Vec::with_capacity(level.len() / 2);
-            for pair in level.chunks_exact(2) {
+            for pair in level.as_chunks::<2>().0 {
                 next.push(self.mux_value_without_or(pair[0], pair[1], select));
             }
             level = next;

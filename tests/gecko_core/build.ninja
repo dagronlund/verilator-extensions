@@ -38,7 +38,7 @@ rule prepare
   description = PREPARE $out
 
 rule verilate
-  command = verilator $verilator_flags --cc --exe main.cpp --timing -Wno-fatal -fno-table --ast-pre-codegen $model_dir/ast.json --coverage-user --sva-preserve --top-module gecko_core_wrapper --Mdir $model_dir -I${reptilia}/rtl -I${reptilia}/rtl/std -I${reptilia}/rtl/mem $sources && touch $out
+  command = verilator $verilator_flags --cc --exe main.cpp --timing -Wno-fatal -fno-table -fno-delayed --ast-pre-codegen $model_dir/ast.json --coverage-user --sva-preserve --top-module gecko_core_wrapper --Mdir $model_dir -I${reptilia}/rtl -I${reptilia}/rtl/std -I${reptilia}/rtl/mem $sources && touch $out
   description = VERILATE $in
 
 rule compile

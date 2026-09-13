@@ -1,0 +1,9 @@
+builddir = build
+
+rule verilate
+  command = mkdir -p build && verilator --cc -fno-table -fno-delayed --ast-pre-codegen build/ast.json --coverage-user --sva-preserve --top-module nba_semantics --Mdir build tb.sv && touch $out
+  description = AST nba_semantics
+
+build build/.verilated: verilate tb.sv
+
+default build/.verilated

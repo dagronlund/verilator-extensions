@@ -11,9 +11,9 @@ use std::{
 };
 
 use verilator_parser::ast::{
-    AssignmentTarget, BinaryOperator, DataType, DataTypeKind, Design, Direction, Domain,
-    Expression, ExpressionKind, Literal, PropertyKind, SignalDomain, Statement, StatementKind,
-    UnaryOperator, VariableId, collect::CollectAccesses,
+    AssignmentKind, AssignmentTarget, BinaryOperator, DataType, DataTypeKind, Design, Direction,
+    Domain, Expression, ExpressionKind, Literal, PropertyKind, SignalDomain, Statement,
+    StatementKind, UnaryOperator, VariableId, collect::CollectAccesses, sequential,
 };
 
 use crate::{
@@ -247,6 +247,8 @@ struct Generator<'a> {
     field_names: Vec<String>,
     type_names: Vec<Option<String>>,
     temporary: usize,
+    expand_sampled: bool,
+    sequential: sequential::SequentialInfo,
 }
 
 #[derive(Debug)]
@@ -332,10 +334,13 @@ impl<'a> Generator<'a> {
             field_names,
             type_names,
             temporary: 0,
+            expand_sampled: false,
+            sequential: sequential::SequentialInfo::default(),
         }
     }
 
     fn generate(mut self) -> Result<GeneratedSources, GenerateError> {
+        self.sequential = sequential::analyze(self.design).map_err(GenerateError::message)?;
         let (combinational, fixed_point) = order_combinational(self.design);
         let input_ids = self.input_ids();
         let state_ids = self.state_ids();
@@ -442,10 +447,8 @@ fn run_combinational(env: &mut Env) {{
         } else {
             self.emit_phase("run_combinational", &combinational, &mut lib_rs);
         }
-        self.emit_phase("run_pre_edge", &self.design.pre_edge, &mut lib_rs);
         self.emit_phase("run_sequential", &self.design.sequential, &mut lib_rs);
-        self.emit_phase("run_post_edge", &self.design.post_edge, &mut lib_rs);
-        self.emit_shadow_functions(&mut lib_rs);
+        self.emit_sampled_function(&mut lib_rs);
         self.emit_make_state(&state_fields, &mut lib_rs);
         self.emit_evaluation(&output_fields, &mut lib_rs);
         writeln!(
@@ -468,6 +471,7 @@ impl Model {{
         let mut env = self.values;
         apply_inputs(&mut env, inputs);
         run_combinational(&mut env);
+        capture_sampled(&mut env);
         make_evaluation(&env)
     }}
 
@@ -475,11 +479,8 @@ impl Model {{
         let mut env = self.values;
         apply_inputs(&mut env, inputs);
         run_combinational(&mut env);
-        prepare_shadows(&mut env);
-        run_pre_edge(&mut env);
+        capture_sampled(&mut env);
         run_sequential(&mut env);
-        run_post_edge(&mut env);
-        commit_shadows(&mut env);
         self.values = env;
         self.state = make_state(&self.values);
         self.eval(inputs)
@@ -518,25 +519,7 @@ impl Model {{
     }
 
     fn state_ids(&self) -> Vec<VariableId> {
-        let shadows = (&self.design.shadow_registers)
-            .into_iter()
-            .map(|(shadow, _)| *shadow)
-            .collect::<BTreeSet<_>>();
-        let mut ids = (&self.design.shadow_registers)
-            .into_iter()
-            .map(|(_, register)| *register)
-            .collect::<BTreeSet<_>>();
-        let mut writes = BTreeSet::new();
-        for statement in (&self.design.initial)
-            .into_iter()
-            .chain(&self.design.pre_edge)
-            .chain(&self.design.sequential)
-            .chain(&self.design.post_edge)
-        {
-            statement.collect_writes(&mut writes);
-        }
-        ids.extend(writes.into_iter().filter(|id| !shadows.contains(id)));
-        ids.into_iter().collect()
+        (&self.sequential.registers).into_iter().copied().collect()
     }
 
     fn signal_fields(&self, ids: &[VariableId]) -> Vec<SignalField> {
@@ -696,8 +679,16 @@ impl Model {{
     fn emit_phase(&mut self, name: &str, statements: &[Statement], source: &mut String) {
         writeln!(source, "fn {name}(env: &mut Env) {{").unwrap();
         writeln!(source, "    let _ = &env;").unwrap();
+        if name == "run_sequential" {
+            writeln!(source, "    let mut pending = *env;").unwrap();
+        }
         for statement in statements {
             self.emit_statement(statement, 1, source);
+        }
+        if name == "run_sequential" {
+            for id in &self.sequential.nonblocking {
+                writeln!(source, "    env.v{0} = pending.v{0};", id.0).unwrap();
+            }
         }
         writeln!(source, "}}\n").unwrap();
     }
@@ -710,7 +701,16 @@ impl Model {{
                     self.emit_statement(statement, indent, source);
                 }
             }
-            StatementKind::Assignment { target, value, .. } => {
+            StatementKind::Assignment {
+                kind,
+                target,
+                value,
+            } => {
+                let destination = if *kind == AssignmentKind::Nonblocking {
+                    "pending"
+                } else {
+                    "env"
+                };
                 let expression = self.emit_expression(value, indent, source, false);
                 let (root, offset, width) = self.emit_target(target, indent, source);
                 if offset == "0usize"
@@ -722,7 +722,12 @@ impl Model {{
                 {
                     let expression_width = self.design.data_type(value.dtype).width;
                     if expression_width == width {
-                        writeln!(source, "{padding}env.v{} = {};", root.0, expression).unwrap();
+                        writeln!(
+                            source,
+                            "{padding}{destination}.v{} = {};",
+                            root.0, expression
+                        )
+                        .unwrap();
                     } else {
                         let temporary = self.next_temporary();
                         writeln!(
@@ -731,12 +736,17 @@ impl Model {{
                             expression
                         )
                         .unwrap();
-                        writeln!(source, "{padding}env.v{} = temp{temporary};", root.0).unwrap();
+                        writeln!(
+                            source,
+                            "{padding}{destination}.v{} = temp{temporary};",
+                            root.0
+                        )
+                        .unwrap();
                     }
                 } else {
                     writeln!(
                         source,
-                        "{padding}env.v{root}.assign_select({offset}, {width}, &{});",
+                        "{padding}{destination}.v{root}.assign_select({offset}, {width}, &{});",
                         expression,
                         root = root.0,
                     )
@@ -824,7 +834,9 @@ impl Model {{
             }
             ExpressionKind::Constant(literal) => generate_constant(literal, width),
             ExpressionKind::Variable { variable, .. } => {
-                if let Some(sampled) = &self.design.variable(*variable).sampled_value {
+                if self.expand_sampled
+                    && let Some(sampled) = &self.design.variable(*variable).sampled_value
+                {
                     return self.emit_expression(sampled, indent, source, to_usize);
                 }
                 return with_to_usize(format!("env.v{}", variable.0), to_usize);
@@ -1046,18 +1058,17 @@ impl Model {{
         writeln!(source, "    }}\n}}\n").unwrap();
     }
 
-    fn emit_shadow_functions(&self, source: &mut String) {
-        writeln!(source, "fn prepare_shadows(env: &mut Env) {{").unwrap();
+    fn emit_sampled_function(&mut self, source: &mut String) {
+        writeln!(source, "fn capture_sampled(env: &mut Env) {{").unwrap();
         writeln!(source, "    let _ = &env;").unwrap();
-        for (shadow, register) in &self.design.shadow_registers {
-            writeln!(source, "    env.v{} = env.v{};", shadow.0, register.0).unwrap();
+        self.expand_sampled = true;
+        for (index, variable) in (&self.design.variables).into_iter().enumerate() {
+            if let Some(sampled) = &variable.sampled_value {
+                let value = self.emit_expression(sampled, 1, source, false);
+                writeln!(source, "    env.v{index} = {value};").unwrap();
+            }
         }
-        writeln!(source, "}}\n").unwrap();
-        writeln!(source, "fn commit_shadows(env: &mut Env) {{").unwrap();
-        writeln!(source, "    let _ = &env;").unwrap();
-        for (shadow, register) in &self.design.shadow_registers {
-            writeln!(source, "    env.v{} = env.v{};", register.0, shadow.0).unwrap();
-        }
+        self.expand_sampled = false;
         writeln!(source, "}}\n").unwrap();
     }
 

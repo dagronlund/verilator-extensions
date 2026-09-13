@@ -11,7 +11,7 @@ use crate::{
     ast::{
         AccessMode, AssignmentKind, AssignmentTarget, BlockKind, DataType, DataTypeId, Design,
         Direction, Domain, Edge, Expression, ExpressionKind, Property, PropertyKind, SignalDomain,
-        SourceInfo, Statement, StatementKind, Variable, VariableId, VariableKind,
+        SourceInfo, Statement, StatementKind, Variable, VariableId, VariableKind, sequential,
     },
     document::{AstDocument, AstNode},
     parser::{dtype::DataTypeResolver, expression::is_supported_expression},
@@ -232,14 +232,25 @@ impl<'a> Parser<'a> {
             .flat_map(|scope| scope.children("blocksp"))
             .collect::<Vec<_>>();
         let sensitivity_domains = self.parse_sensitivity_domains(&active_blocks)?;
-        let shadow_registers = self.parse_shadow_registers(&active_blocks)?;
+        for node in self.document.nodes() {
+            if node.node_type == "ALWAYSPRE"
+                || node.node_type == "ALWAYSPOST"
+                || (node.node_type == "ACTIVE"
+                    && node
+                        .string("name")
+                        .is_some_and(|name| name.starts_with("nba-")))
+            {
+                return Err(ParseError::node(
+                    node,
+                    "lowered NBA AST is unsupported; regenerate with -fno-delayed --ast-pre-codegen",
+                ));
+            }
+        }
 
         let mut static_initial = Vec::new();
         let mut initial = Vec::new();
         let mut combinational = Vec::new();
-        let mut pre_edge = Vec::new();
         let mut sequential = Vec::new();
-        let mut post_edge = Vec::new();
         for active in &active_blocks {
             match active.string("name") {
                 None | Some("") => {
@@ -256,15 +267,6 @@ impl<'a> Parser<'a> {
                 Some("sequent") => {
                     sequential.extend(self.parse_statements(active.children("stmtsp"))?);
                 }
-                Some("nba-flag-shared") => {
-                    for phase in active.children("stmtsp") {
-                        match phase.node_type.as_str() {
-                            "ALWAYSPRE" => pre_edge.push(self.parse_statement(phase)?),
-                            "ALWAYSPOST" => post_edge.push(self.parse_statement(phase)?),
-                            _ => {}
-                        }
-                    }
-                }
                 _ => {}
             }
         }
@@ -273,18 +275,17 @@ impl<'a> Parser<'a> {
         }
 
         static_initial.extend(initial);
-        Ok(Design {
+        let design = Design {
             source: source_info(&self.document.root),
             data_types: self.data_types,
             variables: self.variables,
             sensitivity_domains,
-            shadow_registers,
             initial: static_initial,
             combinational,
-            pre_edge,
             sequential,
-            post_edge,
-        })
+        };
+        sequential::analyze(&design).map_err(ParseError::message)?;
+        Ok(design)
     }
 
     fn parse_sensitivity_domains(
@@ -332,59 +333,6 @@ impl<'a> Parser<'a> {
             .collect())
     }
 
-    fn parse_shadow_registers(
-        &self,
-        active_blocks: &[&AstNode],
-    ) -> Result<Vec<(VariableId, VariableId)>, ParseError> {
-        let mut pre = BTreeMap::new();
-        let mut post = BTreeMap::new();
-        for active in active_blocks {
-            if active.string("name") != Some("nba-shadow-variable") {
-                continue;
-            }
-            for phase in active.children("stmtsp") {
-                for assignment in phase.children("stmtsp") {
-                    if assignment.node_type != "ASSIGN" {
-                        return Err(ParseError::node(
-                            assignment,
-                            "unsupported NBA phase statement",
-                        ));
-                    }
-                    let lhs = self.assignment_variable(assignment, "lhsp")?;
-                    let rhs = self.assignment_variable(assignment, "rhsp")?;
-                    if phase.node_type == "ALWAYSPRE" {
-                        pre.insert(lhs, rhs);
-                    } else if phase.node_type == "ALWAYSPOST" {
-                        post.insert(rhs, lhs);
-                    }
-                }
-            }
-        }
-        if pre != post {
-            return Err(ParseError::message(
-                "ALWAYSPRE and ALWAYSPOST shadow/register pairs disagree",
-            ));
-        }
-        Ok(pre.into_iter().collect())
-    }
-
-    fn assignment_variable(
-        &self,
-        statement: &AstNode,
-        field: &str,
-    ) -> Result<VariableId, ParseError> {
-        let reference = statement
-            .child(field)
-            .ok_or_else(|| ParseError::node(statement, format!("assignment has no {field}")))?;
-        if reference.node_type != "VARREF" {
-            return Err(ParseError::node(
-                reference,
-                "expected whole-variable VARREF",
-            ));
-        }
-        self.reference_variable_id(reference)
-    }
-
     fn parse_statements(&self, nodes: Vec<&AstNode>) -> Result<Vec<Statement>, ParseError> {
         nodes
             .into_iter()
@@ -402,14 +350,6 @@ impl<'a> Parser<'a> {
                 kind: BlockKind::Always,
                 statements: self.parse_statements(node.children("stmtsp"))?,
             },
-            "ALWAYSPRE" => StatementKind::Block {
-                kind: BlockKind::AlwaysPre,
-                statements: self.parse_statements(node.children("stmtsp"))?,
-            },
-            "ALWAYSPOST" => StatementKind::Block {
-                kind: BlockKind::AlwaysPost,
-                statements: self.parse_statements(node.children("stmtsp"))?,
-            },
             "ASSIGN" | "ASSIGNDLY" | "ASSIGNW" => {
                 let lhs = node
                     .child("lhsp")
@@ -423,7 +363,7 @@ impl<'a> Parser<'a> {
                 StatementKind::Assignment {
                     kind: match node.node_type.as_str() {
                         "ASSIGN" => AssignmentKind::Blocking,
-                        "ASSIGNDLY" => AssignmentKind::Delayed,
+                        "ASSIGNDLY" => AssignmentKind::Nonblocking,
                         "ASSIGNW" => AssignmentKind::Continuous,
                         _ => unreachable!(),
                     },

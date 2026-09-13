@@ -5,7 +5,7 @@ rule prepare
   description = PREPARE $out
 
 rule verilate
-  command = verilator --cc -fno-table --ast-pre-codegen build/ast.json --coverage-user --sva-preserve --top-module counter_ones --Mdir build tb.sv && touch $out
+  command = verilator --cc -fno-table -fno-delayed --ast-pre-codegen build/ast.json --coverage-user --sva-preserve --top-module counter_ones --Mdir build tb.sv && touch $out
   description = VERILATE $in
 
 build build/.prepared: prepare tb.sv

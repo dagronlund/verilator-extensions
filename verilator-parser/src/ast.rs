@@ -1,6 +1,7 @@
 pub mod collect;
 mod decimal_biguint;
 pub mod range;
+pub mod sequential;
 
 use num_bigint::BigUint;
 use std::str::FromStr;
@@ -180,7 +181,7 @@ impl Variable {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AssignmentKind {
     Blocking,
-    Delayed,
+    Nonblocking,
     Continuous,
 }
 
@@ -194,8 +195,6 @@ pub enum AccessMode {
 pub enum BlockKind {
     Initial,
     Always,
-    AlwaysPre,
-    AlwaysPost,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,12 +337,9 @@ pub struct Design {
     pub data_types: Vec<DataType>,
     pub variables: Vec<Variable>,
     pub sensitivity_domains: Vec<SignalDomain>,
-    pub shadow_registers: Vec<(VariableId, VariableId)>,
     pub initial: Vec<Statement>,
     pub combinational: Vec<Statement>,
-    pub pre_edge: Vec<Statement>,
     pub sequential: Vec<Statement>,
-    pub post_edge: Vec<Statement>,
 }
 
 impl Design {
@@ -370,7 +366,7 @@ impl Design {
             | DataTypeKind::UnpackedArray { element, .. } => self.data_type_rank(*element) + 1,
             DataTypeKind::PackedStruct { members } => {
                 members
-                    .iter()
+                    .into_iter()
                     .map(|member| self.data_type_rank(member.dtype))
                     .max()
                     .unwrap_or(0)
