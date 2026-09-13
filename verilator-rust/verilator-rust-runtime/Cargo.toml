@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+num-bigint = "0.5"
 
 [lints]
 workspace = true

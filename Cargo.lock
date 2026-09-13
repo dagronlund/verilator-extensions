@@ -318,6 +318,9 @@ dependencies = [
 [[package]]
 name = "verilator-rust-runtime"
 version = "0.1.0"
+dependencies = [
+ "num-bigint",
+]
 
 [[package]]
 name = "verilator-utils"

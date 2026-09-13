@@ -1,5 +1,21 @@
 use std::collections::BTreeMap;
 
+pub(crate) fn storage_type(width: usize) -> &'static str {
+    match width {
+        0 | 1 => "bool",
+        2..=8 => "u8",
+        9..=16 => "u16",
+        17..=32 => "u32",
+        33..=64 => "u64",
+        65..=128 => "u128",
+        _ => "num_bigint::BigUint",
+    }
+}
+
+pub(crate) fn bits_parameters(width: usize) -> String {
+    format!("{width}, {}", storage_type(width))
+}
+
 pub(crate) fn public_value_type(width: usize) -> String {
     match width {
         0 | 1 => "bool".to_string(),
@@ -8,25 +24,26 @@ pub(crate) fn public_value_type(width: usize) -> String {
         17..=32 => "u32".to_string(),
         33..=64 => "u64".to_string(),
         65..=128 => "u128".to_string(),
-        _ => format!("Bits<{width}>"),
+        _ => format!("Bits<{}>", bits_parameters(width)),
     }
 }
 
 pub(crate) fn public_to_bits(value: &str, width: usize) -> String {
+    let width_type = bits_parameters(width);
     if width <= 1 {
-        format!("Bits::<{width}>::from_bool({value})")
+        format!("Bits::<{width_type}>::from_bool({value})")
     } else if width <= 8 {
-        format!("Bits::<{width}>::from_u8({value})")
+        format!("Bits::<{width_type}>::from_u8({value})")
     } else if width <= 16 {
-        format!("Bits::<{width}>::from_u16({value})")
+        format!("Bits::<{width_type}>::from_u16({value})")
     } else if width <= 32 {
-        format!("Bits::<{width}>::from_u32({value})")
+        format!("Bits::<{width_type}>::from_u32({value})")
     } else if width <= 64 {
-        format!("Bits::<{width}>::from_u64({value})")
+        format!("Bits::<{width_type}>::from_u64({value})")
     } else if width <= 128 {
-        format!("Bits::<{width}>::from_u128({value})")
+        format!("Bits::<{width_type}>::from_u128({value})")
     } else {
-        value.to_string()
+        format!("{value}.clone()")
     }
 }
 
@@ -44,7 +61,7 @@ pub(crate) fn bits_to_public(value: &str, width: usize) -> String {
     } else if width <= 128 {
         format!("{value}.to_u128()")
     } else {
-        value.to_string()
+        format!("{value}.clone()")
     }
 }
 

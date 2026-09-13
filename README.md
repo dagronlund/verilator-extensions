@@ -259,8 +259,8 @@ Prefix the clock with `!` to select a negative edge. `--reset [!]NAME` permits
 that reset edge in the sensitivity tree but does not apply reset automatically;
 reset remains a field in the generated `Inputs` structure. The output directory
 must be new or empty. The generator calculates a relative Cargo path from the
-output project to `verilator-rust/verilator-rust-runtime`; the runtime itself has
-no third-party dependencies.
+output project to `verilator-rust/verilator-rust-runtime`; the runtime uses
+`num-bigint` for values wider than 128 bits.
 
 Generated libraries expose `Model`, `Inputs`, `Outputs`, `State`, and
 `Evaluation`. `Model::eval` observes combinational outputs and properties
@@ -279,7 +279,8 @@ let reset = Inputs {
 assert_eq!(model.tick(&reset).outputs.count, 0);
 ```
 
-Generated data types are written to `src/types.rs`; the `Inputs`, `Outputs`,
+Generated data types are written to `src/types.rs`, where scalar aliases and enum
+payloads always use `Bits<WIDTH, Storage>` to retain their RTL width. The `Inputs`, `Outputs`,
 and `State` definitions and trait implementations are written to
 `src/input.rs`, `src/output.rs`, and `src/state.rs`. The model implementation
 and root re-exports remain in `src/lib.rs`.
@@ -287,8 +288,11 @@ and root re-exports remain in `src/lib.rs`.
 Simulation is deterministic and two-state. Uninitialized values start at zero,
 then retained static initializers and `initial` statements execute once. One-bit ports use `bool`, ports
 through 128 bits use the smallest fitting unsigned integer, and wider ports use
-`Bits<WIDTH>`. Generated public wrappers preserve named aliases, enums, packed
-structs/unions, packed arrays, and unpacked array layouts. Anonymous types receive
+`Bits<WIDTH, num_bigint::BigUint>`. Internally, the generator selects
+`Bits<WIDTH, Storage>` with `bool`, `u8`, `u16`, `u32`, `u64`, or `u128`
+for widths through 128 bits, and `BigUint` above that. Primitive-backed values
+are `Copy`; wide values are `Clone`. Generated public wrappers preserve named
+aliases, enums, packed structs/unions, packed arrays, and unpacked array layouts. Anonymous types receive
 unique generated Rust names. Assertions report
 `true` when they hold; assumptions and covers report their active expression.
 Signals with a dense trailing Verilator suffix from `_v0` through `_vN` and a

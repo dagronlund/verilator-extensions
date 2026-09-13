@@ -19,8 +19,8 @@ use verilator_parser::ast::{
 use crate::{
     error::GenerateError,
     util::{
-        bits_to_public, public_to_bits, public_value_type, screaming_identifier, snake_identifier,
-        type_identifier, unique_name, unique_names,
+        bits_parameters, bits_to_public, public_to_bits, public_value_type, screaming_identifier,
+        snake_identifier, type_identifier, unique_name, unique_names,
     },
 };
 
@@ -44,7 +44,7 @@ pub fn generate_project(
     let runtime_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("verilator-rust-runtime");
     let runtime_path = relative_path(&absolute_output, &runtime_dir)?;
     let manifest = format!(
-        "[package]\nname = {:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\nverilator-rust-runtime = {{ path = {:?} }}\n\n[workspace]\n",
+        "[package]\nname = {:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\nnum-bigint = \"0.5\"\nverilator-rust-runtime = {{ path = {:?} }}\n\n[workspace]\n",
         options.crate_name,
         runtime_path.to_string_lossy(),
     );
@@ -275,10 +275,11 @@ fn with_to_usize(value: String, to_usize: bool) -> String {
 }
 
 fn resize_read(value: &str, source_width: usize, target_width: usize, signed: bool) -> String {
+    let target_type = bits_parameters(target_width);
     if source_width == target_width {
         value.to_string()
     } else {
-        format!("({value}).resize::<{target_width}>({signed})")
+        format!("({value}).resize::<{target_type}>({signed})")
     }
 }
 
@@ -288,10 +289,11 @@ fn resize_owned(
     target_width: usize,
     signed: bool,
 ) -> String {
+    let target_type = bits_parameters(target_width);
     if source_width == target_width {
         expression
     } else {
-        format!("{expression}.resize::<{target_width}>({signed})")
+        format!("{expression}.resize::<{target_type}>({signed})")
     }
 }
 
@@ -409,14 +411,25 @@ impl<'a> Generator<'a> {
             "#[derive(Clone, Debug, Default, PartialEq, Eq)]\npub struct Evaluation {{\n    pub outputs: Outputs,\n    pub assertions: Assertions,\n    pub assumptions: Assumptions,\n    pub covers: Covers,\n}}\n"
         )
         .unwrap();
+        let wide_env = (&self.design.variables)
+            .into_iter()
+            .any(|variable| self.design.data_type(variable.dtype).width > 128);
+        let env_copy = if wide_env { "" } else { "Copy, " };
+        let env_read = if wide_env { "env.clone()" } else { "*env" };
+        let values_read = if wide_env {
+            "self.values.clone()"
+        } else {
+            "self.values"
+        };
         writeln!(
             lib_rs,
-            "#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]\nstruct Env {{"
+            "#[derive(Clone, {env_copy}Debug, Default, PartialEq, Eq)]\nstruct Env {{"
         )
         .unwrap();
         for (index, variable) in (&self.design.variables).into_iter().enumerate() {
             let width = self.design.data_type(variable.dtype).width;
-            writeln!(lib_rs, "    v{index}: Bits<{width}>,").unwrap();
+            let width_type = bits_parameters(width);
+            writeln!(lib_rs, "    v{index}: Bits<{width_type}>,").unwrap();
         }
         writeln!(lib_rs, "}}\n").unwrap();
         writeln!(
@@ -434,7 +447,7 @@ impl<'a> Generator<'a> {
                 "
 fn run_combinational(env: &mut Env) {{
     for _ in 0..={variable_count} {{
-        let before = *env;
+        let before = {env_read};
         run_combinational_pass(env);
         if *env == before {{ return; }}
     }}
@@ -468,7 +481,7 @@ impl Model {{
     pub fn state(&self) -> &State {{ &self.state }}
 
     pub fn eval(&self, inputs: &Inputs) -> Evaluation {{
-        let mut env = self.values;
+        let mut env = {values_read};
         apply_inputs(&mut env, inputs);
         run_combinational(&mut env);
         capture_sampled(&mut env);
@@ -476,7 +489,7 @@ impl Model {{
     }}
 
     pub fn tick(&mut self, inputs: &Inputs) -> Evaluation {{
-        let mut env = self.values;
+        let mut env = {values_read};
         apply_inputs(&mut env, inputs);
         run_combinational(&mut env);
         capture_sampled(&mut env);
@@ -680,7 +693,15 @@ impl Model {{
         writeln!(source, "fn {name}(env: &mut Env) {{").unwrap();
         writeln!(source, "    let _ = &env;").unwrap();
         if name == "run_sequential" {
-            writeln!(source, "    let mut pending = *env;").unwrap();
+            let read = if (&self.design.variables)
+                .into_iter()
+                .any(|variable| self.design.data_type(variable.dtype).width > 128)
+            {
+                "env.clone()"
+            } else {
+                "*env"
+            };
+            writeln!(source, "    let mut pending = {read};").unwrap();
         }
         for statement in statements {
             self.emit_statement(statement, 1, source);
@@ -713,6 +734,7 @@ impl Model {{
                 };
                 let expression = self.emit_expression(value, indent, source, false);
                 let (root, offset, width) = self.emit_target(target, indent, source);
+                let width_type = bits_parameters(width);
                 if offset == "0usize"
                     && width
                         == self
@@ -732,7 +754,7 @@ impl Model {{
                         let temporary = self.next_temporary();
                         writeln!(
                             source,
-                            "{padding}let temp{temporary} = {}.resize::<{width}>(false);",
+                            "{padding}let temp{temporary} = {}.resize::<{width_type}>(false);",
                             expression
                         )
                         .unwrap();
@@ -827,6 +849,7 @@ impl Model {{
     ) -> String {
         let dtype = self.design.data_type(expression.dtype);
         let width = dtype.width;
+        let width_type = bits_parameters(width);
         let padding = "    ".repeat(indent);
         let value = match &expression.kind {
             ExpressionKind::Constant(literal) if to_usize => {
@@ -839,7 +862,13 @@ impl Model {{
                 {
                     return self.emit_expression(sampled, indent, source, to_usize);
                 }
-                return with_to_usize(format!("env.v{}", variable.0), to_usize);
+                let value = format!("env.v{}", variable.0);
+                let value = if width > 128 && !to_usize {
+                    format!("{value}.clone()")
+                } else {
+                    value
+                };
+                return with_to_usize(value, to_usize);
             }
             ExpressionKind::Unary { operator, operand } => {
                 let operand_width = self.design.data_type(operand.dtype).width;
@@ -857,10 +886,10 @@ impl Model {{
                     UnaryOperator::ReduceOr => format!("{operand}.reduce_or()"),
                     UnaryOperator::ReduceXor => format!("{operand}.reduce_xor()"),
                     UnaryOperator::LogicalNot => {
-                        format!("Bits::<1>::from_bool(!{operand}.truthy())")
+                        format!("Bits::<1, bool>::from_bool(!{operand}.truthy())")
                     }
-                    UnaryOperator::ZeroExtend => format!("{operand}.resize::<{width}>(false)"),
-                    UnaryOperator::SignExtend => format!("{operand}.resize::<{width}>(true)"),
+                    UnaryOperator::ZeroExtend => format!("{operand}.resize::<{width_type}>(false)"),
+                    UnaryOperator::SignExtend => format!("{operand}.resize::<{width_type}>(true)"),
                 }
             }
             ExpressionKind::Binary { operator, lhs, rhs } => {
@@ -899,16 +928,16 @@ impl Model {{
                 ..
             } => {
                 let value = self.emit_expression(input, indent, source, false);
-                format!("{value}.replicate::<{width}>({count})")
+                format!("{value}.replicate::<{width_type}>({count})")
             }
             ExpressionKind::Select {
                 value,
                 offset,
-                width,
+                width: _,
             } => {
                 let value = self.emit_expression(value, indent, source, false);
                 let offset = self.emit_expression(offset, indent, source, true);
-                format!("{value}.select::<{width}>({offset})")
+                format!("{value}.select::<{width_type}>({offset})")
             }
             ExpressionKind::ArraySelect { array, index } => {
                 let array_dtype = self.design.data_type(array.dtype);
@@ -917,7 +946,7 @@ impl Model {{
                 let index = self.emit_expression(index, indent, source, true);
                 format!(
                     "{array}.select::<{}>(array_offset({index}, {}, {}, {}))",
-                    layout.element_width,
+                    bits_parameters(layout.element_width),
                     layout.indices.left,
                     layout.indices.right,
                     layout.element_width
@@ -939,17 +968,25 @@ impl Model {{
         dtype: &DataType,
     ) -> String {
         let width = dtype.width;
+        let width_type = bits_parameters(width);
+        let storage = util::storage_type(width);
         let lhs_width = self.design.data_type(lhs.dtype).width;
         let rhs_width = self.design.data_type(rhs.dtype).width;
         match operator {
             BinaryOperator::BitwiseAnd => {
-                format!("({lhs_value}).bitwise::<{rhs_width}, {width}>(&({rhs_value}), bool_and)")
+                format!(
+                    "({lhs_value}).bitwise::<{rhs_width}, {width}, _, {storage}>(&({rhs_value}), bool_and)"
+                )
             }
             BinaryOperator::BitwiseOr => {
-                format!("({lhs_value}).bitwise::<{rhs_width}, {width}>(&({rhs_value}), bool_or)")
+                format!(
+                    "({lhs_value}).bitwise::<{rhs_width}, {width}, _, {storage}>(&({rhs_value}), bool_or)"
+                )
             }
             BinaryOperator::BitwiseXor => {
-                format!("({lhs_value}).bitwise::<{rhs_width}, {width}>(&({rhs_value}), bool_xor)")
+                format!(
+                    "({lhs_value}).bitwise::<{rhs_width}, {width}, _, {storage}>(&({rhs_value}), bool_xor)"
+                )
             }
             BinaryOperator::Add | BinaryOperator::Subtract => {
                 let method = if operator == BinaryOperator::Add {
@@ -983,7 +1020,7 @@ impl Model {{
                 let compare_width = lhs_width.max(rhs_width);
                 let lhs_value = resize_read(lhs_value, lhs_width, compare_width, false);
                 let rhs_value = resize_read(rhs_value, rhs_width, compare_width, false);
-                format!("Bits::<1>::from_bool(({lhs_value}) {comparison} ({rhs_value}))")
+                format!("Bits::<1, bool>::from_bool(({lhs_value}) {comparison} ({rhs_value}))")
             }
             BinaryOperator::LessThanUnsigned
             | BinaryOperator::LessThanOrEqualUnsigned
@@ -1012,25 +1049,37 @@ impl Model {{
                     }
                     _ => "!= std::cmp::Ordering::Less",
                 };
-                format!("Bits::<1>::from_bool(({lhs_value}).{method}(&({rhs_value})) {comparison})")
+                format!(
+                    "Bits::<1, bool>::from_bool(({lhs_value}).{method}(&({rhs_value})) {comparison})"
+                )
             }
             BinaryOperator::LogicalAnd => {
-                format!("Bits::<1>::from_bool(({lhs_value}).truthy() && ({rhs_value}).truthy())")
+                format!(
+                    "Bits::<1, bool>::from_bool(({lhs_value}).truthy() && ({rhs_value}).truthy())"
+                )
             }
             BinaryOperator::LogicalOr => {
-                format!("Bits::<1>::from_bool(({lhs_value}).truthy() || ({rhs_value}).truthy())")
+                format!(
+                    "Bits::<1, bool>::from_bool(({lhs_value}).truthy() || ({rhs_value}).truthy())"
+                )
             }
             BinaryOperator::ShiftLeft => {
-                format!("({lhs_value}).shift::<{rhs_width}, {width}>(&({rhs_value}), false, false)")
+                format!(
+                    "({lhs_value}).shift::<{rhs_width}, {width}, _, {storage}>(&({rhs_value}), false, false)"
+                )
             }
             BinaryOperator::ShiftRight => {
-                format!("({lhs_value}).shift::<{rhs_width}, {width}>(&({rhs_value}), true, false)")
+                format!(
+                    "({lhs_value}).shift::<{rhs_width}, {width}, _, {storage}>(&({rhs_value}), true, false)"
+                )
             }
             BinaryOperator::ShiftRightArithmetic => {
-                format!("({lhs_value}).shift::<{rhs_width}, {width}>(&({rhs_value}), true, true)")
+                format!(
+                    "({lhs_value}).shift::<{rhs_width}, {width}, _, {storage}>(&({rhs_value}), true, true)"
+                )
             }
             BinaryOperator::Concat => {
-                format!("Bits::<{width}>::concat(&({lhs_value}), &({rhs_value}))")
+                format!("Bits::<{width_type}>::concat(&({lhs_value}), &({rhs_value}))")
             }
         }
     }
@@ -1129,6 +1178,7 @@ impl Model {{
                 continue;
             };
             let width = dtype.width;
+            let width_type = bits_parameters(width);
             match &dtype.kind {
                 DataTypeKind::Basic { .. } => {
                     writeln!(
@@ -1137,14 +1187,19 @@ impl Model {{
                         dtype.name.as_deref().unwrap_or("anonymous")
                     )
                     .unwrap();
-                    writeln!(source, "pub type {name} = {};\n", public_value_type(width)).unwrap();
+                    writeln!(source, "pub type {name} = Bits<{width_type}>;\n").unwrap();
                 }
                 DataTypeKind::Alias { target } => {
                     let target = self
                         .type_names
                         .get(target.0)
                         .and_then(Clone::clone)
-                        .unwrap_or_else(|| public_value_type(self.design.data_type(*target).width));
+                        .unwrap_or_else(|| {
+                            format!(
+                                "Bits<{}>",
+                                bits_parameters(self.design.data_type(*target).width)
+                            )
+                        });
                     writeln!(
                         source,
                         "/// RTL type alias {:?}.",
@@ -1154,14 +1209,14 @@ impl Model {{
                     writeln!(source, "pub type {name} = {target};\n").unwrap();
                 }
                 DataTypeKind::Enum { variants, .. } => {
-                    let raw = public_value_type(width);
+                    let raw = util::storage_type(width);
                     writeln!(
                         source,
                         "/// Lossless representation of RTL enum {:?}.",
                         dtype.name.as_deref().unwrap_or("anonymous")
                     )
                     .unwrap();
-                    writeln!(source, "#[derive(Clone, Debug, Default, PartialEq, Eq)]\npub struct {name}(pub {raw});").unwrap();
+                    writeln!(source, "#[derive(Clone, Debug, Default, PartialEq, Eq)]\npub struct {name}(pub Bits<{width_type}>);").unwrap();
                     writeln!(source, "impl {name} {{").unwrap();
                     for variant in variants {
                         let variant_name = screaming_identifier(&variant.name);
@@ -1173,7 +1228,7 @@ impl Model {{
                             };
                             writeln!(
                                 source,
-                                "    pub const {variant_name}: Self = Self({value});"
+                                "    pub const {variant_name}: Self = Self(Bits::<{width_type}>::from_raw({value}));"
                             )
                             .unwrap();
                         } else {
@@ -1184,18 +1239,19 @@ impl Model {{
                 }
                 DataTypeKind::PackedArray { declared, .. } => {
                     let element_width = width / declared.len();
+                    let element_type = bits_parameters(element_width);
                     writeln!(
                         source,
                         "/// Lossless packed representation of RTL datatype {rtl_name:?}.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct {name}(pub Bits<{width}>);
+pub struct {name}(pub Bits<{width_type}>);
 
 
 impl {name} {{
-    pub fn get(&self, index: usize) -> Bits<{element_width}> {{
-        self.0.select::<{element_width}>(array_offset(index, {left}, {right}, {element_width}))
+    pub fn get(&self, index: usize) -> Bits<{element_type}> {{
+        self.0.select::<{element_type}>(array_offset(index, {left}, {right}, {element_width}))
     }}
-    pub fn set(&mut self, index: usize, value: Bits<{element_width}>) {{
+    pub fn set(&mut self, index: usize, value: Bits<{element_type}>) {{
         let offset = array_offset(index, {left}, {right}, {element_width});
         self.0.assign_select(offset, {element_width}, &value);
     }}
@@ -1213,14 +1269,14 @@ impl {name} {{
                         source,
                         "/// Lossless packed representation of RTL datatype {rtl_name:?}.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct {name}(pub Bits<{width}>);
+pub struct {name}(pub Bits<{width_type}>);
 
 
 impl {name} {{
-    pub fn get(&self, index: usize) -> Bits<{element_width}> {{
-        self.0.select::<{element_width}>(array_offset(index, {left}, {right}, {element_width}))
+    pub fn get(&self, index: usize) -> Bits<{element_type}> {{
+        self.0.select::<{element_type}>(array_offset(index, {left}, {right}, {element_width}))
     }}
-    pub fn set(&mut self, index: usize, value: Bits<{element_width}>) {{
+    pub fn set(&mut self, index: usize, value: Bits<{element_type}>) {{
         let offset = array_offset(index, {left}, {right}, {element_width});
         self.0.assign_select(offset, {element_width}, &value);
     }}
@@ -1228,6 +1284,7 @@ impl {name} {{
 ",
                         rtl_name = dtype.name.as_deref().unwrap_or("anonymous"),
                         element_width = layout.element_width,
+                        element_type = bits_parameters(layout.element_width),
                         left = layout.indices.left,
                         right = layout.indices.right,
                     )
@@ -1238,7 +1295,7 @@ impl {name} {{
                         source,
                         "/// Lossless packed representation of RTL datatype {rtl_name:?}.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct {name}(pub Bits<{width}>);
+pub struct {name}(pub Bits<{width_type}>);
 
 impl {name} {{",
                         rtl_name = dtype.name.as_deref().unwrap_or("anonymous"),
@@ -1253,14 +1310,15 @@ impl {name} {{",
                         writeln!(
                             source,
                             "
-    pub fn {member_name}(&self) -> Bits<{width}> {{
-        self.0.select::<{width}>({lsb})
+    pub fn {member_name}(&self) -> Bits<{width_type}> {{
+        self.0.select::<{width_type}>({lsb})
     }}
-    pub fn set_{member_name}(&mut self, value: Bits<{width}>) {{
+    pub fn set_{member_name}(&mut self, value: Bits<{width_type}>) {{
         self.0.assign_select({lsb}, {width}, &value);
     }}
 ",
                             width = member.width,
+                            width_type = bits_parameters(member.width),
                             lsb = member.lsb,
                         )
                         .unwrap();
@@ -1279,6 +1337,7 @@ impl {name} {{",
 }
 
 fn generate_constant(literal: &Literal, width: usize) -> String {
+    let width_type = bits_parameters(width);
     let words = literal.value.to_u64_digits();
     if width < usize::BITS as usize {
         let value = match words.as_slice() {
@@ -1286,9 +1345,9 @@ fn generate_constant(literal: &Literal, width: usize) -> String {
             [value] => usize::try_from(*value).expect("narrow constant exceeds usize"),
             _ => panic!("narrow constant exceeds usize"),
         };
-        format!("Bits::<{width}>::from_usize({value})")
+        format!("Bits::<{width_type}>::from_usize({value})")
     } else {
-        format!("Bits::<{width}>::from_words(&{words:?})")
+        format!("Bits::<{width_type}>::from_words(&{words:?})")
     }
 }
 

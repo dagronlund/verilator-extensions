@@ -5,7 +5,12 @@ use std::{
 };
 
 use verilator_parser::{
-    ast::{Design, Domain, Edge},
+    ast::{
+        AccessMode, AssignmentKind, AssignmentTarget, BinaryOperator, DataType, DataTypeId,
+        DataTypeKind, Design, Direction, Domain, Edge, EnumVariant, Expression, ExpressionKind,
+        Literal, SignalDomain, SourceInfo, Statement, StatementKind, Variable, VariableId,
+        VariableKind, range::Range,
+    },
     document::AstDocument,
 };
 
@@ -247,7 +252,7 @@ fn eval_and_tick_once() {
         );
         if fixture == "case_statements" {
             let source = fs::read_to_string(output.join("src/lib.rs")).unwrap();
-            assert!(source.contains(".select::<1>(2)"));
+            assert!(source.contains(".select::<1, bool>(2)"));
         }
         if fixture == "multidim_arrays" {
             let library = fs::read_to_string(output.join("src/lib.rs")).unwrap();
@@ -378,6 +383,200 @@ fn preserves_nonblocking_scheduling() {
     }
 }
 "#).unwrap();
+    let status = Command::new("cargo")
+        .args(["test", "--quiet"])
+        .current_dir(&output)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn generated_storage_boundaries_preserve_wide_state_and_nonblocking_reads() {
+    let source = SourceInfo {
+        node_type: "storage-test".into(),
+        address: None,
+        location: None,
+    };
+    let mut design = Design {
+        source: source.clone(),
+        data_types: Vec::new(),
+        variables: Vec::new(),
+        sensitivity_domains: vec![SignalDomain {
+            variable: VariableId(0),
+            domain: Domain::new("clk", Edge::Positive),
+        }],
+        initial: Vec::new(),
+        combinational: Vec::new(),
+        sequential: Vec::new(),
+    };
+    let widths = [1, 8, 9, 16, 17, 32, 33, 64, 65, 128, 129, 257];
+    let mut smoke = String::from(
+        "use generated_storage::{Inputs, Model};\nuse verilator_rust_runtime::Bits;\n#[test]\nfn wraps_and_delays() {\nlet mut model = Model::new();\nlet mut inputs = Inputs::default();\n",
+    );
+    let mut checks = String::new();
+    let mut ones = String::new();
+    let mut wrapped = String::new();
+    for width in widths {
+        let dtype = DataTypeId(design.data_types.len());
+        let range = Range {
+            left: width as isize - 1,
+            right: 0,
+        };
+        design.data_types.push(DataType {
+            source: source.clone(),
+            name: Some(format!("word_{width}")),
+            width,
+            indices: range,
+            signed: false,
+            unpacked: None,
+            kind: DataTypeKind::Basic { packed: range },
+        });
+        let mut enumeration = design.data_types[dtype.0].clone();
+        enumeration.name = Some(format!("choice_{width}"));
+        enumeration.kind = DataTypeKind::Enum {
+            base: dtype,
+            variants: vec![EnumVariant {
+                source: source.clone(),
+                name: "ONE".into(),
+                value: Literal {
+                    spelling: "1".into(),
+                    value: 1u8.into(),
+                },
+            }],
+        };
+        design.data_types.push(enumeration);
+        let storage = super::util::storage_type(width);
+        smoke.push_str(&format!("let word: generated_storage::Word{width} = Bits::<{width}, {storage}>::from_u8(1);\nassert_eq!(word.to_u128(), 1);\n"));
+        let call = if width > 128 { "()" } else { "" };
+        smoke.push_str(&format!(
+            "assert_eq!(generated_storage::Choice{width}::ONE{call}.0.to_u128(), 1);\n"
+        ));
+        if width == 1 {
+            design.variables.push(Variable {
+                source: source.clone(),
+                name: "clk".into(),
+                original_name: None,
+                dtype,
+                direction: Direction::Input,
+                kind: VariableKind::Port,
+                top_level: true,
+                internal: false,
+                sampled_value: None,
+                property: None,
+            });
+        }
+        let input = VariableId(design.variables.len());
+        let count = VariableId(input.0 + 1);
+        let delayed = VariableId(input.0 + 2);
+        for (name, direction) in [
+            (format!("data_w{width}"), Direction::Input),
+            (format!("count_w{width}"), Direction::Output),
+            (format!("delayed_w{width}"), Direction::Output),
+        ] {
+            design.variables.push(Variable {
+                source: source.clone(),
+                name,
+                original_name: None,
+                dtype,
+                direction,
+                kind: VariableKind::Port,
+                top_level: true,
+                internal: false,
+                sampled_value: None,
+                property: None,
+            });
+        }
+        let read = |variable| Expression {
+            source: source.clone(),
+            dtype,
+            kind: ExpressionKind::Variable {
+                variable,
+                access: AccessMode::Read,
+            },
+        };
+        for (variable, value) in [
+            (
+                count,
+                Expression {
+                    source: source.clone(),
+                    dtype,
+                    kind: ExpressionKind::Binary {
+                        operator: BinaryOperator::Add,
+                        lhs: Box::new(read(count)),
+                        rhs: Box::new(read(input)),
+                    },
+                },
+            ),
+            (delayed, read(count)),
+        ] {
+            design.sequential.push(Statement {
+                source: source.clone(),
+                kind: StatementKind::Assignment {
+                    kind: AssignmentKind::Nonblocking,
+                    target: AssignmentTarget::Variable {
+                        variable,
+                        access: AccessMode::Write,
+                    },
+                    value,
+                },
+            });
+        }
+        let (maximum, one, zero): (String, String, String) = if width == 1 {
+            ("true".into(), "true".into(), "false".into())
+        } else if width <= 128 {
+            let max = u128::MAX >> (128 - width);
+            (max.to_string(), "1".into(), "0".into())
+        } else {
+            (
+                format!(
+                    "Bits::<{width}, num_bigint::BigUint>::from_words(&[u64::MAX; {}])",
+                    width.div_ceil(64)
+                ),
+                "Bits::from_u8(1)".into(),
+                "Bits::zero()".into(),
+            )
+        };
+        smoke.push_str(&format!("inputs.data_w{width} = {maximum};\n"));
+        checks.push_str(&format!("assert_eq!(first.outputs.count_w{width}, {maximum});\nassert_eq!(first.outputs.delayed_w{width}, {zero});\n"));
+        ones.push_str(&format!("inputs.data_w{width} = {one};\n"));
+        wrapped.push_str(&format!("assert_eq!(second.outputs.count_w{width}, {zero});\nassert_eq!(second.outputs.delayed_w{width}, {maximum});\n"));
+    }
+    smoke.push_str("let first = model.tick(&inputs);\nassert_eq!(model.eval(&inputs), first);\n");
+    smoke.push_str(&checks);
+    smoke.push_str(&ones);
+    smoke.push_str("let second = model.tick(&inputs);\nassert_eq!(model.eval(&inputs), second);\n");
+    smoke.push_str(&wrapped);
+    smoke.push_str(&checks); // Previously returned wide values must remain unchanged.
+    smoke.push_str("}\n");
+    let output =
+        std::env::temp_dir().join(format!("verilator-rust-storage-{}", std::process::id()));
+    replace_generated_project(
+        &design,
+        &output,
+        &GenerateOptions {
+            crate_name: "generated-storage".into(),
+            clock: Domain::new("clk", Edge::Positive),
+            reset: None,
+        },
+    )
+    .unwrap();
+    let library = fs::read_to_string(output.join("src/lib.rs")).unwrap();
+    for (width, storage) in [
+        (1, "bool"),
+        (8, "u8"),
+        (9, "u16"),
+        (17, "u32"),
+        (33, "u64"),
+        (65, "u128"),
+        (129, "num_bigint::BigUint"),
+        (257, "num_bigint::BigUint"),
+    ] {
+        assert!(library.contains(&format!("Bits<{width}, {storage}>")));
+    }
+    fs::create_dir_all(output.join("tests")).unwrap();
+    fs::write(output.join("tests/storage.rs"), smoke).unwrap();
     let status = Command::new("cargo")
         .args(["test", "--quiet"])
         .current_dir(&output)

@@ -1,19 +1,59 @@
+pub mod storage;
 #[cfg(test)]
 mod tests;
 
+use std::{cmp::Ordering, fmt};
+
+use crate::storage::{Arithmetic, Storage};
+
 /// An owned, fixed-width two-state bit vector. Bit zero is the least-significant bit.
+///
+/// `S` is selected by the generator: `bool` for one bit, the smallest fitting
+/// unsigned primitive through 128 bits, and `num_bigint::BigUint` beyond that.
+/// Unused high bits are always cleared. Primitive-backed vectors implement
+/// `Copy`; `BigUint`-backed vectors must be cloned when ownership is shared.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Bits<const WIDTH: usize> {
-    bits: [bool; WIDTH],
+pub struct Bits<const WIDTH: usize, S: Storage> {
+    bits: S,
 }
 
-impl<const WIDTH: usize> Bits<WIDTH> {
-    fn new(bits: [bool; WIDTH]) -> Self {
-        Self { bits }
+macro_rules! primitive_constants {
+    ($($ty:ty),*) => {$(
+        impl<const WIDTH: usize> Bits<WIDTH, $ty> {
+            /// Constructs a constant from storage, clearing unused high bits.
+            pub const fn from_raw(value: $ty) -> Self {
+                assert!(WIDTH <= <$ty>::BITS as usize, "storage is too narrow for bit vector");
+                let mask = if WIDTH == 0 { 0 } else { <$ty>::MAX >> (<$ty>::BITS as usize - WIDTH) };
+                Self { bits: value & mask }
+            }
+        }
+    )*};
+}
+
+primitive_constants!(u8, u16, u32, u64, u128);
+
+impl<const WIDTH: usize> Bits<WIDTH, bool> {
+    /// Constructs a constant boolean vector (or an empty zero-width vector).
+    pub const fn from_raw(value: bool) -> Self {
+        assert!(WIDTH <= 1, "storage is too narrow for bit vector");
+        Self {
+            bits: value && WIDTH != 0,
+        }
+    }
+}
+
+impl<const WIDTH: usize, S: Storage> Bits<WIDTH, S> {
+    fn from_fn(mut bit: impl FnMut(usize) -> bool) -> Self {
+        let mut result = Self::zero();
+        for index in 0..WIDTH {
+            result.set_bit(index, bit(index));
+        }
+        result
     }
 
     pub fn zero() -> Self {
-        Self::new([false; WIDTH])
+        assert!(WIDTH <= S::CAPACITY, "storage is too narrow for bit vector");
+        Self { bits: S::default() }
     }
 
     pub fn from_bool(value: bool) -> Self {
@@ -41,25 +81,28 @@ impl<const WIDTH: usize> Bits<WIDTH> {
     }
 
     pub fn from_u128(value: u128) -> Self {
-        Self::new(std::array::from_fn(|bit| {
-            bit < 128 && ((value >> bit) & 1) != 0
-        }))
+        let mut result = Self::zero();
+        result.bits = S::from_u128(value);
+        result.bits.mask(WIDTH);
+        result
     }
 
     /// Constructs a vector from little-endian 64-bit words.
     pub fn from_words(words: &[u64]) -> Self {
-        Self::new(std::array::from_fn(|bit| {
-            words
-                .get(bit / 64)
-                .is_some_and(|word| ((word >> (bit % 64)) & 1) != 0)
-        }))
+        let mut result = Self::zero();
+        for (word_index, word) in words.into_iter().take(WIDTH.div_ceil(64)).enumerate() {
+            for bit in 0..64 {
+                result.set_bit(word_index * 64 + bit, (word >> bit) & 1 != 0);
+            }
+        }
+        result
     }
 
     /// Returns little-endian 64-bit words, with unused high bits cleared.
     pub fn to_words(&self) -> Vec<u64> {
         let mut words = vec![0; WIDTH.div_ceil(64)];
         for bit in 0..WIDTH {
-            if self.bits[bit] {
+            if self.bit(bit) {
                 words[bit / 64] |= 1 << (bit % 64);
             }
         }
@@ -67,32 +110,25 @@ impl<const WIDTH: usize> Bits<WIDTH> {
     }
 
     pub fn set_bit(&mut self, index: usize, value: bool) {
-        if let Some(bit) = self.bits.get_mut(index) {
-            *bit = value;
+        if index < WIDTH {
+            self.bits.set_bit(index, value);
         }
     }
 
     pub fn to_u128(&self) -> u128 {
-        (&self.bits)
-            .into_iter()
-            .take(128)
-            .enumerate()
-            .fold(0, |value, (bit, set)| value | (u128::from(*set) << bit))
+        self.bits.low_u128()
     }
 
     pub fn to_usize(&self) -> usize {
         assert!(
-            !(&self.bits)
-                .into_iter()
-                .skip(usize::BITS as usize)
-                .any(|bit| *bit),
+            !(usize::BITS as usize..WIDTH).any(|bit| self.bit(bit)),
             "bit vector value exceeds usize"
         );
         self.to_u128() as usize
     }
 
     pub fn bit(&self, index: usize) -> bool {
-        self.bits.get(index).copied().unwrap_or(false)
+        index < WIDTH && self.bits.bit(index)
     }
 
     pub const fn width() -> usize {
@@ -100,70 +136,58 @@ impl<const WIDTH: usize> Bits<WIDTH> {
     }
 
     pub fn truthy(&self) -> bool {
-        (&self.bits).into_iter().any(|bit| *bit)
+        (0..WIDTH).any(|bit| self.bit(bit))
     }
 
-    pub fn resize<const OUTPUT: usize>(&self, signed: bool) -> Bits<OUTPUT> {
-        let fill = signed && self.bits.last().copied().unwrap_or(false);
-        Bits::new(std::array::from_fn(|index| {
-            self.bits.get(index).copied().unwrap_or(fill)
-        }))
+    pub fn resize<const OUTPUT: usize, O: Storage>(&self, signed: bool) -> Bits<OUTPUT, O> {
+        let fill = signed && self.bit(WIDTH.saturating_sub(1));
+        Bits::from_fn(|index| if index < WIDTH { self.bit(index) } else { fill })
     }
 
     pub fn bit_not(&self) -> Self {
-        Self::new(std::array::from_fn(|index| !self.bits[index]))
+        Self::from_fn(|index| !self.bit(index))
     }
 
     pub fn negate(&self) -> Self {
         Self::zero().sub(self)
     }
 
-    pub fn reduce_and(&self) -> Bits<1> {
-        Bits::from_bool((&self.bits).into_iter().all(|bit| *bit))
+    pub fn reduce_and(&self) -> Bits<1, bool> {
+        Bits::from_bool((0..WIDTH).all(|bit| self.bit(bit)))
     }
 
-    pub fn reduce_or(&self) -> Bits<1> {
+    pub fn reduce_or(&self) -> Bits<1, bool> {
         Bits::from_bool(self.truthy())
     }
 
-    pub fn reduce_xor(&self) -> Bits<1> {
-        Bits::from_bool((&self.bits).into_iter().fold(false, |a, b| a ^ b))
+    pub fn reduce_xor(&self) -> Bits<1, bool> {
+        Bits::from_bool((0..WIDTH).fold(false, |a, bit| a ^ self.bit(bit)))
     }
 
-    pub fn bitwise<const RHS: usize, const OUTPUT: usize>(
+    pub fn bitwise<const RHS: usize, const OUTPUT: usize, R: Storage, O: Storage>(
         &self,
-        rhs: &Bits<RHS>,
+        rhs: &Bits<RHS, R>,
         operation: fn(bool, bool) -> bool,
-    ) -> Bits<OUTPUT> {
-        Bits::new(std::array::from_fn(|index| {
-            operation(self.bit(index), rhs.bit(index))
-        }))
+    ) -> Bits<OUTPUT, O> {
+        Bits::from_fn(|index| operation(self.bit(index), rhs.bit(index)))
     }
 
     pub fn add(&self, rhs: &Self) -> Self {
-        let mut carry = false;
-        let bits = std::array::from_fn(|index| {
-            let lhs = self.bit(index);
-            let rhs = rhs.bit(index);
-            let result = lhs ^ rhs ^ carry;
-            carry = (lhs && rhs) || (carry && (lhs || rhs));
-            result
-        });
-        Self::new(bits)
+        Self {
+            bits: self.bits.arithmetic(&rhs.bits, WIDTH, Arithmetic::Add),
+        }
     }
 
     pub fn sub(&self, rhs: &Self) -> Self {
-        self.add(&rhs.bit_not().add(&Self::from_u8(1)))
+        Self {
+            bits: self.bits.arithmetic(&rhs.bits, WIDTH, Arithmetic::Sub),
+        }
     }
 
     pub fn mul(&self, rhs: &Self) -> Self {
-        let mut result = Self::zero();
-        for shift in 0..WIDTH {
-            if rhs.bit(shift) {
-                result = result.add(&self.shift_left_usize(shift));
-            }
+        Self {
+            bits: self.bits.arithmetic(&rhs.bits, WIDTH, Arithmetic::Mul),
         }
-        result
     }
 
     fn extended_bit(&self, index: usize, signed: bool) -> bool {
@@ -174,53 +198,42 @@ impl<const WIDTH: usize> Bits<WIDTH> {
         }
     }
 
-    pub fn cmp_unsigned<const RHS: usize>(&self, rhs: &Bits<RHS>) -> std::cmp::Ordering {
+    pub fn cmp_unsigned<const RHS: usize, R: Storage>(&self, rhs: &Bits<RHS, R>) -> Ordering {
         for index in (0..WIDTH.max(RHS)).rev() {
             match self.bit(index).cmp(&rhs.bit(index)) {
-                std::cmp::Ordering::Equal => {}
+                Ordering::Equal => {}
                 ordering => return ordering,
             }
         }
-        std::cmp::Ordering::Equal
+        Ordering::Equal
     }
 
-    pub fn cmp_signed<const RHS: usize>(&self, rhs: &Bits<RHS>) -> std::cmp::Ordering {
+    pub fn cmp_signed<const RHS: usize, R: Storage>(&self, rhs: &Bits<RHS, R>) -> Ordering {
         let width = WIDTH.max(RHS);
         let lhs_sign = self.extended_bit(width.saturating_sub(1), true);
         let rhs_sign = rhs.extended_bit(width.saturating_sub(1), true);
         match (lhs_sign, rhs_sign) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
             _ => {
                 for index in (0..width).rev() {
                     match self
                         .extended_bit(index, true)
                         .cmp(&rhs.extended_bit(index, true))
                     {
-                        std::cmp::Ordering::Equal => {}
+                        Ordering::Equal => {}
                         ordering => return ordering,
                     }
                 }
-                std::cmp::Ordering::Equal
+                Ordering::Equal
             }
         }
     }
 
     pub fn div_unsigned(&self, rhs: &Self) -> Self {
-        let mut quotient = Self::zero();
-        let mut remainder = vec![false; WIDTH + 1];
-        let mut divisor = Vec::with_capacity(WIDTH + 1);
-        divisor.extend_from_slice(&rhs.bits);
-        divisor.push(false);
-        for index in (0..WIDTH).rev() {
-            remainder.rotate_right(1);
-            remainder[0] = self.bit(index);
-            if compare_bits(&remainder, &divisor) != std::cmp::Ordering::Less {
-                subtract_bits(&mut remainder, &divisor);
-                quotient.bits[index] = true;
-            }
+        Self {
+            bits: self.bits.arithmetic(&rhs.bits, WIDTH, Arithmetic::Div),
         }
-        quotient
     }
 
     pub fn div_signed(&self, rhs: &Self) -> Self {
@@ -229,8 +242,16 @@ impl<const WIDTH: usize> Bits<WIDTH> {
         }
         let lhs_negative = self.bit(WIDTH - 1);
         let rhs_negative = rhs.bit(WIDTH - 1);
-        let lhs_magnitude = if lhs_negative { self.negate() } else { *self };
-        let rhs_magnitude = if rhs_negative { rhs.negate() } else { *rhs };
+        let lhs_magnitude = if lhs_negative {
+            self.negate()
+        } else {
+            self.clone()
+        };
+        let rhs_magnitude = if rhs_negative {
+            rhs.negate()
+        } else {
+            rhs.clone()
+        };
         let quotient = lhs_magnitude.div_unsigned(&rhs_magnitude);
         if lhs_negative ^ rhs_negative {
             quotient.negate()
@@ -240,61 +261,68 @@ impl<const WIDTH: usize> Bits<WIDTH> {
     }
 
     fn shift_left_usize(&self, distance: usize) -> Self {
-        Self::new(std::array::from_fn(|index| {
+        Self::from_fn(|index| {
             index
                 .checked_sub(distance)
                 .is_some_and(|source| self.bit(source))
-        }))
+        })
     }
 
-    pub fn shift<const AMOUNT: usize, const OUTPUT: usize>(
+    pub fn shift<const AMOUNT: usize, const OUTPUT: usize, A: Storage, O: Storage>(
         &self,
-        amount: &Bits<AMOUNT>,
+        amount: &Bits<AMOUNT, A>,
         right: bool,
         arithmetic: bool,
-    ) -> Bits<OUTPUT> {
+    ) -> Bits<OUTPUT, O> {
         let fill = arithmetic && self.bit(OUTPUT.saturating_sub(1));
         let distance = amount.to_usize();
         if distance >= OUTPUT {
-            return Bits::new([fill; OUTPUT]);
+            return Bits::from_fn(|_| fill);
         }
-        let value = self.resize::<OUTPUT>(false);
+        let value = self.resize::<OUTPUT, O>(false);
         if right {
-            Bits::new(std::array::from_fn(|index| {
-                value.bits.get(index + distance).copied().unwrap_or(fill)
-            }))
+            Bits::from_fn(|index| {
+                if index + distance < OUTPUT {
+                    value.bit(index + distance)
+                } else {
+                    fill
+                }
+            })
         } else {
             value.shift_left_usize(distance)
         }
     }
 
-    pub fn concat<const LHS: usize, const RHS: usize>(lhs: &Bits<LHS>, rhs: &Bits<RHS>) -> Self {
-        Self::new(std::array::from_fn(|index| {
+    pub fn concat<const LHS: usize, const RHS: usize, L: Storage, R: Storage>(
+        lhs: &Bits<LHS, L>,
+        rhs: &Bits<RHS, R>,
+    ) -> Self {
+        Self::from_fn(|index| {
             if index < RHS {
                 rhs.bit(index)
             } else {
                 lhs.bit(index - RHS)
             }
-        }))
+        })
     }
 
-    pub fn replicate<const OUTPUT: usize>(&self, count: usize) -> Bits<OUTPUT> {
-        Bits::new(std::array::from_fn(|index| {
+    pub fn replicate<const OUTPUT: usize, O: Storage>(&self, count: usize) -> Bits<OUTPUT, O> {
+        Bits::from_fn(|index| {
             index < WIDTH.saturating_mul(count) && WIDTH != 0 && self.bit(index % WIDTH)
-        }))
+        })
     }
 
-    pub fn select<const OUTPUT: usize>(&self, offset: usize) -> Bits<OUTPUT> {
-        Bits::new(std::array::from_fn(|bit| self.bit(offset + bit)))
+    pub fn select<const OUTPUT: usize, O: Storage>(&self, offset: usize) -> Bits<OUTPUT, O> {
+        Bits::from_fn(|bit| offset.checked_add(bit).is_some_and(|index| self.bit(index)))
     }
 
     /// Assigns a value to a slice of bits starting at the given offset. If the
     /// assignment would exceed the width of the bit vector, it is skipped.
-    pub fn assign_select<const VALUE: usize>(
+    pub fn assign_select<const VALUE: usize, V: Storage>(
         &mut self,
         offset: usize,
         width: usize,
-        value: &Bits<VALUE>,
+        value: &Bits<VALUE, V>,
     ) {
         let Some(end) = offset.checked_add(width) else {
             return;
@@ -303,49 +331,24 @@ impl<const WIDTH: usize> Bits<WIDTH> {
             return;
         }
         for bit in 0..width {
-            self.bits[offset + bit] = value.bit(bit);
+            self.set_bit(offset + bit, value.bit(bit));
         }
     }
 }
 
-impl<const WIDTH: usize> Default for Bits<WIDTH> {
+impl<const WIDTH: usize, S: Storage> Default for Bits<WIDTH, S> {
     fn default() -> Self {
         Self::zero()
     }
 }
 
-impl<const WIDTH: usize> std::fmt::Debug for Bits<WIDTH> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<const WIDTH: usize, S: Storage> fmt::Debug for Bits<WIDTH, S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}'b", WIDTH)?;
-        for bit in (&self.bits).into_iter().rev() {
-            formatter.write_str(if *bit { "1" } else { "0" })?;
+        for bit in (0..WIDTH).rev() {
+            formatter.write_str(if self.bit(bit) { "1" } else { "0" })?;
         }
         Ok(())
-    }
-}
-
-fn compare_bits(lhs: &[bool], rhs: &[bool]) -> std::cmp::Ordering {
-    for index in (0..lhs.len().max(rhs.len())).rev() {
-        match lhs
-            .get(index)
-            .copied()
-            .unwrap_or(false)
-            .cmp(&rhs.get(index).copied().unwrap_or(false))
-        {
-            std::cmp::Ordering::Equal => {}
-            ordering => return ordering,
-        }
-    }
-    std::cmp::Ordering::Equal
-}
-
-fn subtract_bits(lhs: &mut [bool], rhs: &[bool]) {
-    let mut borrow = false;
-    for (index, lhs_bit) in lhs.iter_mut().enumerate() {
-        let rhs_bit = rhs.get(index).copied().unwrap_or(false);
-        let result = *lhs_bit ^ rhs_bit ^ borrow;
-        borrow = (!*lhs_bit && (rhs_bit || borrow)) || (rhs_bit && borrow);
-        *lhs_bit = result;
     }
 }
 
