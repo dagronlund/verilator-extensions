@@ -26,37 +26,24 @@ and prints a concise summary. The supported regression inputs are tracked in
 Target Workflow
 ---------------
 
+Run `./test.sh` to remove each fixture's `build/` directory, rebuild every
+Verilator fixture, and run all Cargo workspace tests. Additional arguments are
+passed to `cargo test`.
+
 Each regression fixture contains its SystemVerilog sources and a Ninja build.
-Generate its JSON AST with the Verilator build that supports durable formal
-wires:
+Use a Verilator build that supports `--sva-preserve` and `--ast-pre-codegen`.
+To rebuild a single fixture, run Ninja in its directory, for example:
 
 ```sh
 ninja -C tests/counter
-ninja -C tests/combinational_loops
-ninja -C tests/counter_free
-ninja -C tests/counter_ones
-ninja -C tests/case_statements
-ninja -C tests/signed_operations
-ninja -C tests/data_types
-ninja -C tests/multidim_arrays
-ninja -C tests/wire_ports
-ninja -C tests/fifo_stage
-ninja -C tests/fifo_stage_bypass
-ninja -C tests/fifo_stage_fail_assert
-ninja -C tests/fifo_stage_fail_free
-ninja -C tests/packet_switch
-ninja -C tests/package_properties
-ninja -C tests/public_submodules
-ninja -C tests/gecko_core
 ```
 
 Each Ninja build keeps all Verilator output in its local `build/` directory and
-copies the selected AST stage to `build/ast.json` for a stable path. Most
-fixtures select the sampled stage; fixtures without sampled nodes may select a
-different suitable stage, such as Gecko's `activetop` tree. The Rust tests
-invoke Ninja once per fixture and validate the stable AST. Missing or invalid
-cached ASTs are cleaned and rebuilt once automatically. The numeric pass prefix
-is an internal Verilator detail and can change as passes are added or reordered.
+uses `--ast-pre-codegen build/ast.json` to write the JSON AST directly before
+scheduling and C++ generation. The Rust tests invoke Ninja once per fixture and
+validate the stable AST. Missing or invalid cached ASTs are cleaned and rebuilt
+once automatically. Gecko's simulator targets separately generate C++ before
+compiling the simulator.
 
 Convert the tree, print a concise named FSM summary, and optionally write
 AIGER 1.9. The output extension selects ASCII `.aag` or binary `.aig`:
@@ -137,9 +124,10 @@ clock is not an FSM input. Primary inputs and readable signals without drivers
 become nondeterministic inputs. Registers without a recognized constant
 initializer have an unknown initial value. A specified reset is applied once by
 three-valued simulation to infer resettable latch values, then tied inactive in
-the final FSM. Verilator-generated `_Vpast_*` formal history registers are
-initialized to zero, matching Verilator's initialization convention for those
-internal variables.
+the final FSM. Verilator-generated `_Vpast_*` history and `__Vnfa_*` assertion-state registers
+are initialized to zero, matching Verilator's initialization convention. Their
+explicit zero-valued `INITIALSTATIC` assignments are accepted by AIGER conversion;
+other initial blocks remain unsupported.
 
 Verilator's sampled and delayed nodes are interpreted as follows:
 
@@ -149,7 +137,7 @@ Verilator's sampled and delayed nodes are interpreted as follows:
 - Blocking and nonblocking assignments are symbolically executed, and `IF`
   branches are merged with `verilator-formal` mux operations.
 
-Formal properties use the durable `__Vformal_*` variables. Assert wires are
+Formal properties use the durable `__Vsva_*` variables. Assert wires are
 violation indicators and are inverted before being added as FSM assertions;
 assume and cover wires are used directly. Covers remain in the in-memory model
 but are omitted from AAG because the AIGER writer has no cover section.
@@ -257,10 +245,11 @@ and `State` definitions and trait implementations are written to
 and root re-exports remain in `src/lib.rs`.
 
 Simulation is deterministic and two-state. Uninitialized values start at zero,
-then retained `initial` statements execute once. One-bit ports use `bool`, ports
+then retained static initializers and `initial` statements execute once. One-bit ports use `bool`, ports
 through 128 bits use the smallest fitting unsigned integer, and wider ports use
 `Bits<WIDTH>`. Generated public wrappers preserve named aliases, enums, packed
-structs/unions, packed arrays, and unpacked array layouts. Assertions report
+structs/unions, packed arrays, and unpacked array layouts. Anonymous types receive
+unique generated Rust names. Assertions report
 `true` when they hold; assumptions and covers report their active expression.
 Signals with a dense trailing Verilator suffix from `_v0` through `_vN` and a
 common value type are exposed as one Rust array field with the suffix removed.

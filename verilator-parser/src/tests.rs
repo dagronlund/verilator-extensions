@@ -145,6 +145,9 @@ fn typed_ast_is_owned_and_resolves_counter_metadata() {
             .display_name(),
         "clk"
     );
+    assert_eq!(design.initial.len(), 1);
+    assert_eq!(design.initial[0].source.node_type, "INITIALSTATIC");
+    assert!(design.combinational.is_empty());
     assert!(!design.sequential.is_empty());
     assert!(!design.data_types.is_empty());
 
@@ -168,6 +171,61 @@ fn typed_ast_is_owned_and_resolves_counter_metadata() {
             .into_iter()
             .any(|variable| variable.sampled_value.is_some())
     );
+}
+
+#[test]
+fn preserved_sva_wires_resolve_all_property_kinds() {
+    let document = AstDocument::from_path(build_fixture("counter")).unwrap();
+    let design = Design::try_from(&document).unwrap();
+    let properties: Vec<_> = (&design.variables)
+        .into_iter()
+        .filter_map(|variable| variable.property.as_ref())
+        .collect();
+
+    assert_eq!(properties.len(), 3);
+    for (kind, name) in [
+        (PropertyKind::Assertion, "assert_holds_when_disabled"),
+        (PropertyKind::Assumption, "assume_no_overflow"),
+        (PropertyKind::Cover, "cover_saturation"),
+    ] {
+        let matching: Vec<_> = (&properties)
+            .into_iter()
+            .filter(|property| property.kind == kind)
+            .map(|property| property.name.as_str())
+            .collect();
+        assert_eq!(matching, vec![name]);
+    }
+}
+
+#[test]
+fn static_initializers_precede_initial_blocks_with_omitted_or_empty_names() {
+    let input = r#"
+    {"type":"NETLIST","nodesp":[
+      {"type":"BASICDTYPE","addr":"(D)"},
+      {"type":"VAR","addr":"(C)","name":"clk","dtypep":"(D)","direction":"INPUT","varType":"PORT"},
+      {"type":"VAR","addr":"(Q)","name":"state","dtypep":"(D)","varType":"VAR"},
+      {"type":"SENTREE","addr":"(S)","sensesp":[
+        {"type":"SENITEM","edgeType":"POS","sensp":{"type":"VARREF","varp":"(C)","dtypep":"(D)","access":"RD"}}
+      ]},
+      {"type":"SCOPE","addr":"(P)","name":"TOP","blocksp":[
+        {"type":"ACTIVE","stmtsp":[{"type":"INITIAL","stmtsp":[
+          {"type":"ASSIGN","lhsp":{"type":"VARREF","varp":"(Q)","dtypep":"(D)","access":"WR"},"rhsp":{"type":"CONST","name":"1'h1","dtypep":"(D)"}}
+        ]}]},
+        {"type":"ACTIVE","name":"","stmtsp":[{"type":"INITIALSTATIC","stmtsp":[
+          {"type":"ASSIGN","lhsp":{"type":"VARREF","varp":"(Q)","dtypep":"(D)","access":"WR"},"rhsp":{"type":"CONST","name":"1'h0","dtypep":"(D)"}}
+        ]}]},
+        {"type":"ACTIVE","name":"sequent","sentreep":"(S)","stmtsp":[
+          {"type":"ASSIGN","lhsp":{"type":"VARREF","varp":"(Q)","dtypep":"(D)","access":"WR"},"rhsp":{"type":"VARREF","varp":"(Q)","dtypep":"(D)","access":"RD"}}
+        ]}
+      ]}
+    ]}
+    "#;
+    let document = AstDocument::from_reader(input.as_bytes()).unwrap();
+    let design = Design::try_from(&document).unwrap();
+    assert_eq!(design.initial.len(), 2);
+    assert_eq!(design.initial[0].source.node_type, "INITIALSTATIC");
+    assert_eq!(design.initial[1].source.node_type, "INITIAL");
+    assert!(design.combinational.is_empty());
 }
 
 #[test]

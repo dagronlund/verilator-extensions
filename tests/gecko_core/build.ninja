@@ -34,15 +34,15 @@ sources = ${reptilia}/rtl/std/std_pkg.sv $
   ${reptilia}/wrappers/gecko/gecko_core_wrapper.sv
 
 rule prepare
-  command = mkdir -p $model_dir && rm -f $model_dir/*_activetop.tree.json $model_dir/ast.json && touch $out
+  command = mkdir -p $model_dir && rm -f $model_dir/ast.json && touch $out
   description = PREPARE $out
 
 rule verilate
-  command = verilator $verilator_flags --cc --exe main.cpp --timing -Wno-fatal -fno-table --dump-tree-json --coverage-user --formal-wires --top-module gecko_core_wrapper --Mdir $model_dir -I${reptilia}/rtl -I${reptilia}/rtl/std -I${reptilia}/rtl/mem $sources && cp $model_dir/*_activetop.tree.json $model_dir/ast.json && touch $out
+  command = verilator $verilator_flags --cc --exe main.cpp --timing -Wno-fatal -fno-table --ast-pre-codegen $model_dir/ast.json --coverage-user --sva-preserve --top-module gecko_core_wrapper --Mdir $model_dir -I${reptilia}/rtl -I${reptilia}/rtl/std -I${reptilia}/rtl/mem $sources && touch $out
   description = VERILATE $in
 
 rule compile
-  command = make -C $model_dir -f Vgecko_core_wrapper.mk $make_flags Vgecko_core_wrapper && mv $model_dir/Vgecko_core_wrapper $out
+  command = verilator $verilator_flags --cc --exe main.cpp --timing -Wno-fatal -fno-table --coverage-user --sva-preserve --top-module gecko_core_wrapper --Mdir $model_dir -I${reptilia}/rtl -I${reptilia}/rtl/std -I${reptilia}/rtl/mem $sources && make -C $model_dir -f Vgecko_core_wrapper.mk $make_flags Vgecko_core_wrapper && mv $model_dir/Vgecko_core_wrapper $out
   description = COMPILE $out
 
 build source_files: phony ${reptilia}/rtl/std/std_pkg.sv ${reptilia}/rtl/stream/stream_pkg.sv ${reptilia}/rtl/riscv/riscv_pkg.sv ${reptilia}/rtl/riscv/riscv32_pkg.sv ${reptilia}/rtl/riscv/riscv32i_pkg.sv ${reptilia}/rtl/riscv/riscv32m_pkg.sv ${reptilia}/rtl/gecko/gecko_pkg.sv ${reptilia}/rtl/stream/stream_intf.sv ${reptilia}/rtl/std/std_register.sv ${reptilia}/rtl/stream/stream_stage.sv ${reptilia}/rtl/stream/stream_connect.sv ${reptilia}/rtl/stream/stream_stage_multiple.sv ${reptilia}/rtl/mem/mem_intf.sv ${reptilia}/rtl/mem/mem_stage.sv ${reptilia}/rtl/xilinx/xilinx_distributed_ram.sv ${reptilia}/rtl/mem/mem_combinational.sv ${reptilia}/rtl/gecko/gecko_fetch_predictor.sv ${reptilia}/rtl/gecko/gecko_fetch.sv ${reptilia}/rtl/riscv/riscv32f_pkg.sv ${reptilia}/rtl/gecko/gecko_decode_regfile.sv ${reptilia}/rtl/gecko/gecko_decode_speculative.sv ${reptilia}/rtl/riscv/riscv32v_pkg.sv ${reptilia}/rtl/gecko/gecko_decode_pkg.sv ${reptilia}/rtl/gecko/gecko_decode.sv ${reptilia}/rtl/stream/stream_controller.sv ${reptilia}/rtl/gecko/gecko_execute.sv ${reptilia}/rtl/gecko/gecko_writeback.sv ${reptilia}/rtl/std/std_counter_pipelined.sv ${reptilia}/rtl/gecko/gecko_system.sv ${reptilia}/rtl/gecko/gecko_core.sv ${reptilia}/wrappers/gecko/gecko_core_wrapper.sv
@@ -61,6 +61,7 @@ build build-release/.verilated: verilate source_files main.cpp | build-release/.
   verilator_flags = -O3
 build build-release/simulator: compile main.cpp | build-release/.verilated
   model_dir = build-release
+  verilator_flags = -O3
   make_flags = OPT_FAST=-O3 OPT_SLOW=-O3 OPT_GLOBAL=-O3
 
 build simulator: phony build/simulator

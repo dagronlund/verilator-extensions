@@ -7,7 +7,7 @@ use std::{
 };
 
 use verilator_parser::{
-    ast::{BlockKind, Design, Domain, Edge, StatementKind},
+    ast::{BlockKind, Design, Domain, Edge, ExpressionKind, StatementKind},
     document::AstDocument,
 };
 use verilator_utils::{
@@ -216,22 +216,49 @@ fn typed_ast_retains_initial_blocks_but_aiger_conversion_rejects_them() {
       ]
     }
     "#;
-    let document = AstDocument::from_reader(input.as_bytes()).unwrap();
-    let design = Design::try_from(&document).unwrap();
+    for node_type in ["INITIAL", "INITIALSTATIC"] {
+        let input = input.replace("\"INITIAL\"", &format!("\"{node_type}\""));
+        let document = AstDocument::from_reader(input.as_bytes()).unwrap();
+        let design = Design::try_from(&document).unwrap();
 
-    assert_eq!(design.initial.len(), 1);
-    match &design.initial[0].kind {
-        StatementKind::Block { kind, .. } => {
-            assert_eq!(*kind, BlockKind::Initial);
+        assert_eq!(design.initial.len(), 1);
+        match &design.initial[0].kind {
+            StatementKind::Block { kind, .. } => {
+                assert_eq!(*kind, BlockKind::Initial);
+            }
+            kind => panic!("expected initial block, found {kind:?}"),
         }
-        kind => panic!("expected initial block, found {kind:?}"),
-    }
 
+        let error = NamedFsm::from_design(&design, Domain::new("clk", Edge::Positive), None)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(&format!("{node_type} at test.sv,2:3,2:10")));
+        assert!(error.contains("not supported by AIGER conversion"));
+    }
+}
+
+#[test]
+fn nonzero_formal_static_initialization_is_rejected() {
+    let document = AstDocument::from_path(build_fixture("counter")).unwrap();
+    let mut design = Design::try_from(&document).unwrap();
+    assert_eq!(design.initial[0].source.node_type, "INITIALSTATIC");
+    let StatementKind::Block { statements, .. } = &mut design.initial[0].kind else {
+        panic!("expected static initializer block");
+    };
+    let StatementKind::Assignment { value, .. } = &mut statements[0].kind else {
+        panic!("expected static initializer assignment");
+    };
+    let ExpressionKind::Constant(literal) = &mut value.kind else {
+        panic!("expected constant initializer");
+    };
+    literal.value = 1u32.into();
+    literal.spelling = "4'h1".to_string();
     let error = NamedFsm::from_design(&design, Domain::new("clk", Edge::Positive), None)
         .err()
         .unwrap()
         .to_string();
-    assert!(error.contains("INITIAL at test.sv,2:3,2:10"));
+    assert!(error.contains("INITIALSTATIC"));
     assert!(error.contains("not supported by AIGER conversion"));
 }
 
@@ -287,7 +314,7 @@ fn counter_free_fixture() {
     assert_eq!(model.clock.domain.name, "clk");
     assert_eq!(signal_names(&model.inputs), vec!["reset_n", "enable"]);
     assert_eq!(model.fsm.get_inputs().len(), 2);
-    assert_eq!(model.fsm.get_latches().len(), 9);
+    assert_eq!(model.fsm.get_latches().len(), 41);
     assert_eq!(model.assertions.len(), 1);
     assert_eq!(model.assumptions.len(), 1);
     assert_eq!(model.covers.len(), 1);
@@ -744,7 +771,7 @@ fn verify_counter_model(model: &NamedFsm) {
     assert_eq!(model.clock.domain.edge, Edge::Positive);
     assert_eq!(signal_names(&model.inputs), vec!["reset_n", "enable"]);
     assert_eq!(model.fsm.get_inputs().len(), 2);
-    assert_eq!(model.fsm.get_latches().len(), 9);
+    assert_eq!(model.fsm.get_latches().len(), 41);
     assert_eq!(signal_names(&model.outputs), vec!["count"]);
     assert_eq!(model.fsm.get_outputs().len(), 4);
     assert_eq!(
@@ -763,7 +790,9 @@ fn verify_formal_history_initialization(model: &NamedFsm) {
     let latches = model.fsm.get_latches();
 
     for register in &model.registers {
-        let expected = register.name.starts_with("_Vpast_").then_some(false);
+        let name = register.name.rsplit('.').next().unwrap();
+        let expected =
+            (name.starts_with("_Vpast_") || name.starts_with("__Vnfa_")).then_some(false);
         for bit in &register.bits {
             let output = bit.value.unwrap_variable();
             let latch = (&latches)
@@ -1292,7 +1321,7 @@ fn verify_aag_export(model: &mut NamedFsm) {
             .into_iter()
             .filter(|latch| latch.reset_value == Some(false))
             .count(),
-        5
+        37
     );
     assert_eq!(
         round_trip

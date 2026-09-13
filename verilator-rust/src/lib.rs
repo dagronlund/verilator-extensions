@@ -317,11 +317,12 @@ impl<'a> Generator<'a> {
         let type_names = (&design.data_types)
             .into_iter()
             .map(|dtype| {
-                dtype
+                let name = dtype
                     .name
                     .as_deref()
-                    .map(type_identifier)
-                    .map(|name| unique_name(name, &mut used_types))
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("RtlType");
+                Some(unique_name(type_identifier(name), &mut used_types))
             })
             .collect();
         Self {
@@ -1122,7 +1123,7 @@ impl Model {{
                     writeln!(
                         source,
                         "/// RTL datatype {:?}.",
-                        dtype.name.as_deref().unwrap()
+                        dtype.name.as_deref().unwrap_or("anonymous")
                     )
                     .unwrap();
                     writeln!(source, "pub type {name} = {};\n", public_value_type(width)).unwrap();
@@ -1136,7 +1137,7 @@ impl Model {{
                     writeln!(
                         source,
                         "/// RTL type alias {:?}.",
-                        dtype.name.as_deref().unwrap()
+                        dtype.name.as_deref().unwrap_or("anonymous")
                     )
                     .unwrap();
                     writeln!(source, "pub type {name} = {target};\n").unwrap();
@@ -1146,7 +1147,7 @@ impl Model {{
                     writeln!(
                         source,
                         "/// Lossless representation of RTL enum {:?}.",
-                        dtype.name.as_deref().unwrap()
+                        dtype.name.as_deref().unwrap_or("anonymous")
                     )
                     .unwrap();
                     writeln!(source, "#[derive(Clone, Debug, Default, PartialEq, Eq)]\npub struct {name}(pub {raw});").unwrap();
@@ -1189,7 +1190,7 @@ impl {name} {{
     }}
 }}
 ",
-                        rtl_name = dtype.name.as_deref().unwrap(),
+                        rtl_name = dtype.name.as_deref().unwrap_or("anonymous"),
                         left = declared.left,
                         right = declared.right,
                     )
@@ -1214,7 +1215,7 @@ impl {name} {{
     }}
 }}
 ",
-                        rtl_name = dtype.name.as_deref().unwrap(),
+                        rtl_name = dtype.name.as_deref().unwrap_or("anonymous"),
                         element_width = layout.element_width,
                         left = layout.indices.left,
                         right = layout.indices.right,
@@ -1229,7 +1230,7 @@ impl {name} {{
 pub struct {name}(pub Bits<{width}>);
 
 impl {name} {{",
-                        rtl_name = dtype.name.as_deref().unwrap(),
+                        rtl_name = dtype.name.as_deref().unwrap_or("anonymous"),
                     )
                     .unwrap();
                     let member_names = unique_names(

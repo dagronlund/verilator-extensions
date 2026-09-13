@@ -7,8 +7,6 @@ use std::{
     fmt,
 };
 
-use crate::parser::{dtype::DataTypeResolver, expression::is_supported_expression};
-
 use crate::{
     ast::{
         AccessMode, AssignmentKind, AssignmentTarget, BlockKind, DataType, DataTypeId, Design,
@@ -16,6 +14,7 @@ use crate::{
         SourceInfo, Statement, StatementKind, Variable, VariableId, VariableKind,
     },
     document::{AstDocument, AstNode},
+    parser::{dtype::DataTypeResolver, expression::is_supported_expression},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +144,7 @@ impl<'a> Parser<'a> {
                 Some(name.clone())
             };
             let internal = is_internal_name(&name, original_name.as_deref().unwrap_or(""));
-            let mut property = declaration.string("origName").and_then(parse_formal_name);
+            let mut property = declaration.string("origName").and_then(parse_sva_name);
             if !is_root && let Some(property) = &mut property {
                 let scope_name = var_scope
                     .string("scopep")
@@ -235,6 +234,7 @@ impl<'a> Parser<'a> {
         let sensitivity_domains = self.parse_sensitivity_domains(&active_blocks)?;
         let shadow_registers = self.parse_shadow_registers(&active_blocks)?;
 
+        let mut static_initial = Vec::new();
         let mut initial = Vec::new();
         let mut combinational = Vec::new();
         let mut pre_edge = Vec::new();
@@ -242,9 +242,11 @@ impl<'a> Parser<'a> {
         let mut post_edge = Vec::new();
         for active in &active_blocks {
             match active.string("name") {
-                Some("") => {
+                None | Some("") => {
                     for statement in active.children("stmtsp") {
-                        if statement.node_type == "INITIAL" {
+                        if statement.node_type == "INITIALSTATIC" {
+                            static_initial.push(self.parse_statement(statement)?);
+                        } else if statement.node_type == "INITIAL" {
                             initial.push(self.parse_statement(statement)?);
                         } else {
                             combinational.push(self.parse_statement(statement)?);
@@ -270,13 +272,14 @@ impl<'a> Parser<'a> {
             return Err(ParseError::message("AST has no sequent ACTIVE block"));
         }
 
+        static_initial.extend(initial);
         Ok(Design {
             source: source_info(&self.document.root),
             data_types: self.data_types,
             variables: self.variables,
             sensitivity_domains,
             shadow_registers,
-            initial,
+            initial: static_initial,
             combinational,
             pre_edge,
             sequential,
@@ -391,14 +394,20 @@ impl<'a> Parser<'a> {
 
     fn parse_statement(&self, node: &AstNode) -> Result<Statement, ParseError> {
         let kind = match node.node_type.as_str() {
-            "INITIAL" | "ALWAYS" | "ALWAYSPRE" | "ALWAYSPOST" => StatementKind::Block {
-                kind: match node.node_type.as_str() {
-                    "INITIAL" => BlockKind::Initial,
-                    "ALWAYS" => BlockKind::Always,
-                    "ALWAYSPRE" => BlockKind::AlwaysPre,
-                    "ALWAYSPOST" => BlockKind::AlwaysPost,
-                    _ => unreachable!(),
-                },
+            "INITIAL" | "INITIALSTATIC" => StatementKind::Block {
+                kind: BlockKind::Initial,
+                statements: self.parse_statements(node.children("stmtsp"))?,
+            },
+            "ALWAYS" => StatementKind::Block {
+                kind: BlockKind::Always,
+                statements: self.parse_statements(node.children("stmtsp"))?,
+            },
+            "ALWAYSPRE" => StatementKind::Block {
+                kind: BlockKind::AlwaysPre,
+                statements: self.parse_statements(node.children("stmtsp"))?,
+            },
+            "ALWAYSPOST" => StatementKind::Block {
+                kind: BlockKind::AlwaysPost,
                 statements: self.parse_statements(node.children("stmtsp"))?,
             },
             "ASSIGN" | "ASSIGNDLY" | "ASSIGNW" => {
@@ -723,11 +732,11 @@ fn assignment_target_width(
     }
 }
 
-fn parse_formal_name(original_name: &str) -> Option<Property> {
+fn parse_sva_name(original_name: &str) -> Option<Property> {
     for (prefix, kind) in [
-        ("__Vformal_assert_", PropertyKind::Assertion),
-        ("__Vformal_assume_", PropertyKind::Assumption),
-        ("__Vformal_cover_", PropertyKind::Cover),
+        ("__Vsva_assert_", PropertyKind::Assertion),
+        ("__Vsva_assume_", PropertyKind::Assumption),
+        ("__Vsva_cover_", PropertyKind::Cover),
     ] {
         if let Some(name) = original_name.strip_prefix(prefix) {
             let name = name

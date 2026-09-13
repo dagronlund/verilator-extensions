@@ -1,11 +1,11 @@
 builddir = build
 
 rule prepare
-  command = mkdir -p build && rm -f build/*_sampled.tree.json build/ast.json && touch $out
+  command = mkdir -p build && rm -f build/ast.json && touch $out
   description = PREPARE $out
 
 rule verilate
-  command = verilator --cc -fno-table --dump-tree-json --coverage-user --formal-wires --top-module fifo_stage_bypass_tb --Mdir build tb.sv ../lib/stage.sv ../lib/fifo.sv && cp build/*_sampled.tree.json build/ast.json && touch $out
+  command = verilator --cc -fno-table --ast-pre-codegen build/ast.json --coverage-user --sva-preserve --top-module fifo_stage_bypass_tb --Mdir build tb.sv ../lib/stage.sv ../lib/fifo.sv && touch $out
   description = VERILATE $in
 
 build build/.prepared: prepare tb.sv ../lib/stage.sv ../lib/fifo.sv

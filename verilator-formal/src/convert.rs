@@ -243,7 +243,10 @@ fn label_variables_as(fsm: &mut FSM, signal: &NamedSignal, name: &str) {
 
 impl Converter<'_> {
     fn convert(mut self) -> Result<NamedFsm, ConvertError> {
-        if let Some(initial) = self.design.initial.first() {
+        if let Some(initial) = (&self.design.initial)
+            .into_iter()
+            .find(|statement| !is_formal_static_initializer(self.design, statement))
+        {
             return Err(ConvertError::source(
                 &initial.source,
                 "initial blocks are not supported by AIGER conversion",
@@ -1109,12 +1112,38 @@ impl Converter<'_> {
     }
 }
 
+// These generated zero assignments are represented by the formal latch reset values.
+// Keep rejecting arbitrary RTL initialization rather than silently discarding it.
+fn is_formal_static_initializer(design: &Design, statement: &Statement) -> bool {
+    if statement.source.node_type != "INITIALSTATIC" {
+        return false;
+    }
+    let StatementKind::Block { statements, .. } = &statement.kind else {
+        return false;
+    };
+    statements.into_iter().all(|statement| {
+        let StatementKind::Assignment {
+            target: AssignmentTarget::Variable { variable, .. },
+            value,
+            ..
+        } = &statement.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Constant(literal) = &value.kind else {
+            return false;
+        };
+        formal_history_initial_value(design.variable(*variable)) == Some(false)
+            && literal.value.bits() == 0
+    })
+}
+
 fn formal_history_initial_value(variable: &Variable) -> Option<bool> {
     let formal_history = variable
         .original_name
         .as_deref()
         .and_then(|name| name.rsplit('.').next())
-        .is_some_and(|name| name.starts_with("_Vpast_"));
+        .is_some_and(|name| name.starts_with("_Vpast_") || name.starts_with("__Vnfa_"));
     (variable.kind == VariableKind::ModuleTemporary && formal_history).then_some(false)
 }
 
