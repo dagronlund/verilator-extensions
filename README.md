@@ -260,7 +260,7 @@ that reset edge in the sensitivity tree but does not apply reset automatically;
 reset remains a field in the generated `Inputs` structure. The output directory
 must be new or empty. The generator calculates a relative Cargo path from the
 output project to `verilator-rust/verilator-rust-runtime`; the runtime uses
-`num-bigint` for values wider than 128 bits.
+`ruint` for values wider than 128 bits.
 
 Generated libraries expose `Model`, `Inputs`, `Outputs`, `State`, and
 `Evaluation`. `Model::eval` observes combinational outputs and properties
@@ -270,13 +270,14 @@ commits pending nonblocking updates, and returns the post-edge evaluation:
 
 ```rust
 use generated_counter::{Inputs, Model};
+use verilator_rust_runtime::Bits;
 
 let mut model = Model::new();
 let reset = Inputs {
-    reset_n: false,
-    enable: false,
+    reset_n: Bits::from_bool(false),
+    enable: Bits::from_bool(false),
 };
-assert_eq!(model.tick(&reset).outputs.count, 0);
+assert_eq!(model.tick(&reset).outputs.count.to_u128(), 0);
 ```
 
 Generated data types are written to `src/types.rs`, where scalar aliases and enum
@@ -286,12 +287,12 @@ and `State` definitions and trait implementations are written to
 and root re-exports remain in `src/lib.rs`.
 
 Simulation is deterministic and two-state. Uninitialized values start at zero,
-then retained static initializers and `initial` statements execute once. One-bit ports use `bool`, ports
-through 128 bits use the smallest fitting unsigned integer, and wider ports use
-`Bits<WIDTH, num_bigint::BigUint>`. Internally, the generator selects
-`Bits<WIDTH, Storage>` with `bool`, `u8`, `u16`, `u32`, `u64`, or `u128`
-for widths through 128 bits, and `BigUint` above that. Primitive-backed values
-are `Copy`; wide values are `Clone`. Generated public wrappers preserve named
+then retained static initializers and `initial` statements execute once. Every
+`Inputs`, `Outputs`, and `State` field uses `Bits<WIDTH, Storage>` (or an array of
+these values), including one-bit fields. The generator selects `bool`, `u8`,
+`u16`, `u32`, `u64`, or `u128` storage for widths through 128 bits, and
+`ruint::Uint<WIDTH, { ruint::nlimbs(WIDTH) }>` above that. All backing types
+are `Copy`. Generated public wrappers preserve named
 aliases, enums, packed structs/unions, packed arrays, and unpacked array layouts. Anonymous types receive
 unique generated Rust names. Assertions report
 `true` when they hold; assumptions and covers report their active expression.

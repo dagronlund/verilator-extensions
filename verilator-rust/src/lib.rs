@@ -19,8 +19,8 @@ use verilator_parser::ast::{
 use crate::{
     error::GenerateError,
     util::{
-        bits_parameters, bits_to_public, public_to_bits, public_value_type, screaming_identifier,
-        snake_identifier, type_identifier, unique_name, unique_names,
+        bits_parameters, screaming_identifier, snake_identifier, type_identifier, unique_name,
+        unique_names,
     },
 };
 
@@ -44,7 +44,7 @@ pub fn generate_project(
     let runtime_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("verilator-rust-runtime");
     let runtime_path = relative_path(&absolute_output, &runtime_dir)?;
     let manifest = format!(
-        "[package]\nname = {:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\nnum-bigint = \"0.5\"\nverilator-rust-runtime = {{ path = {:?} }}\n\n[workspace]\n",
+        "[package]\nname = {:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\nruint = {{ version = \"1.20\", default-features = false }}\nverilator-rust-runtime = {{ path = {:?} }}\n\n[workspace]\n",
         options.crate_name,
         runtime_path.to_string_lossy(),
     );
@@ -411,19 +411,9 @@ impl<'a> Generator<'a> {
             "#[derive(Clone, Debug, Default, PartialEq, Eq)]\npub struct Evaluation {{\n    pub outputs: Outputs,\n    pub assertions: Assertions,\n    pub assumptions: Assumptions,\n    pub covers: Covers,\n}}\n"
         )
         .unwrap();
-        let wide_env = (&self.design.variables)
-            .into_iter()
-            .any(|variable| self.design.data_type(variable.dtype).width > 128);
-        let env_copy = if wide_env { "" } else { "Copy, " };
-        let env_read = if wide_env { "env.clone()" } else { "*env" };
-        let values_read = if wide_env {
-            "self.values.clone()"
-        } else {
-            "self.values"
-        };
         writeln!(
             lib_rs,
-            "#[derive(Clone, {env_copy}Debug, Default, PartialEq, Eq)]\nstruct Env {{"
+            "#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]\nstruct Env {{"
         )
         .unwrap();
         for (index, variable) in (&self.design.variables).into_iter().enumerate() {
@@ -447,7 +437,7 @@ impl<'a> Generator<'a> {
                 "
 fn run_combinational(env: &mut Env) {{
     for _ in 0..={variable_count} {{
-        let before = {env_read};
+        let before = *env;
         run_combinational_pass(env);
         if *env == before {{ return; }}
     }}
@@ -481,7 +471,7 @@ impl Model {{
     pub fn state(&self) -> &State {{ &self.state }}
 
     pub fn eval(&self, inputs: &Inputs) -> Evaluation {{
-        let mut env = {values_read};
+        let mut env = self.values;
         apply_inputs(&mut env, inputs);
         run_combinational(&mut env);
         capture_sampled(&mut env);
@@ -489,7 +479,7 @@ impl Model {{
     }}
 
     pub fn tick(&mut self, inputs: &Inputs) -> Evaluation {{
-        let mut env = {values_read};
+        let mut env = self.values;
         apply_inputs(&mut env, inputs);
         run_combinational(&mut env);
         capture_sampled(&mut env);
@@ -608,7 +598,7 @@ impl Model {{
     }
 
     fn emit_signal_struct(&self, name: &str, fields: &[SignalField], source: &mut String) {
-        writeln!(source, "#[derive(Clone, Debug, PartialEq, Eq)]").unwrap();
+        writeln!(source, "#[derive(Clone, Debug, Default, PartialEq, Eq)]").unwrap();
         writeln!(source, "pub struct {name} {{").unwrap();
         for field in fields {
             let variable = self.design.variable(field.ids[0]);
@@ -626,7 +616,7 @@ impl Model {{
             } else {
                 writeln!(source, "    /// RTL signal {:?}.", variable.display_name()).unwrap();
             }
-            let value_type = public_value_type(width);
+            let value_type = format!("Bits<{}>", bits_parameters(width));
             let field_type = if field.array {
                 format!("[{value_type}; {}]", field.ids.len())
             } else {
@@ -635,18 +625,6 @@ impl Model {{
             writeln!(source, "    pub {}: {},", field.name, field_type).unwrap();
         }
         writeln!(source, "}}\n").unwrap();
-        writeln!(source, "impl Default for {name} {{").unwrap();
-        writeln!(source, "    fn default() -> Self {{").unwrap();
-        writeln!(source, "        Self {{").unwrap();
-        for field in fields {
-            let value = if field.array {
-                "std::array::from_fn(|_| Default::default())"
-            } else {
-                "Default::default()"
-            };
-            writeln!(source, "            {}: {value},", field.name).unwrap();
-        }
-        writeln!(source, "        }}\n    }}\n}}\n").unwrap();
     }
 
     fn emit_property_struct(&self, name: &str, kind: PropertyKind, source: &mut String) {
@@ -671,19 +649,12 @@ impl Model {{
         writeln!(source, "fn apply_inputs(env: &mut Env, inputs: &Inputs) {{").unwrap();
         for field in fields {
             for (index, id) in (&field.ids).into_iter().enumerate() {
-                let width = self.design.data_type(self.design.variable(*id).dtype).width;
                 let value = if field.array {
                     format!("inputs.{}[{index}]", field.name)
                 } else {
                     format!("inputs.{}", field.name)
                 };
-                writeln!(
-                    source,
-                    "    env.v{} = {};",
-                    id.0,
-                    public_to_bits(&value, width)
-                )
-                .unwrap();
+                writeln!(source, "    env.v{} = {value};", id.0).unwrap();
             }
         }
         writeln!(source, "}}\n").unwrap();
@@ -693,15 +664,7 @@ impl Model {{
         writeln!(source, "fn {name}(env: &mut Env) {{").unwrap();
         writeln!(source, "    let _ = &env;").unwrap();
         if name == "run_sequential" {
-            let read = if (&self.design.variables)
-                .into_iter()
-                .any(|variable| self.design.data_type(variable.dtype).width > 128)
-            {
-                "env.clone()"
-            } else {
-                "*env"
-            };
-            writeln!(source, "    let mut pending = {read};").unwrap();
+            writeln!(source, "    let mut pending = *env;").unwrap();
         }
         for statement in statements {
             self.emit_statement(statement, 1, source);
@@ -863,11 +826,6 @@ impl Model {{
                     return self.emit_expression(sampled, indent, source, to_usize);
                 }
                 let value = format!("env.v{}", variable.0);
-                let value = if width > 128 && !to_usize {
-                    format!("{value}.clone()")
-                } else {
-                    value
-                };
                 return with_to_usize(value, to_usize);
             }
             ExpressionKind::Unary { operator, operand } => {
@@ -1089,10 +1047,7 @@ impl Model {{
         for field in fields {
             let values = (&field.ids)
                 .into_iter()
-                .map(|id| {
-                    let width = self.design.data_type(self.design.variable(*id).dtype).width;
-                    bits_to_public(&format!("env.v{}", id.0), width)
-                })
+                .map(|id| format!("env.v{}", id.0))
                 .collect::<Vec<_>>();
             if field.array {
                 writeln!(source, "        {}: [", field.name).unwrap();
@@ -1128,10 +1083,7 @@ impl Model {{
         for field in output_fields {
             let values = (&field.ids)
                 .into_iter()
-                .map(|id| {
-                    let width = self.design.data_type(self.design.variable(*id).dtype).width;
-                    bits_to_public(&format!("env.v{}", id.0), width)
-                })
+                .map(|id| format!("env.v{}", id.0))
                 .collect::<Vec<_>>();
             if field.array {
                 writeln!(source, "            {}: [", field.name).unwrap();

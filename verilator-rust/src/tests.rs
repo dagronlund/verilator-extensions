@@ -108,17 +108,18 @@ fn generates_a_counter_project_with_relative_runtime() {
         output.join("tests/smoke.rs"),
         r#"
 use generated_counter::{Inputs, Model};
+use verilator_rust_runtime::Bits;
 
 #[test]
 fn reset_increment_and_hold() {
     let mut model = Model::new();
-    let mut inputs = Inputs { reset_n: false, enable: true };
-    assert_eq!(model.tick(&inputs).outputs.count, 0);
-    inputs.reset_n = true;
-    assert_eq!(model.tick(&inputs).outputs.count, 1);
-    assert_eq!(model.tick(&inputs).outputs.count, 2);
-    inputs.enable = false;
-    assert_eq!(model.tick(&inputs).outputs.count, 2);
+    let mut inputs = Inputs { reset_n: Bits::from_bool(false), enable: Bits::from_bool(true) };
+    assert_eq!(model.tick(&inputs).outputs.count.to_u128(), 0);
+    inputs.reset_n = Bits::from_bool(true);
+    assert_eq!(model.tick(&inputs).outputs.count.to_u128(), 1);
+    assert_eq!(model.tick(&inputs).outputs.count.to_u128(), 2);
+    inputs.enable = Bits::from_bool(false);
+    assert_eq!(model.tick(&inputs).outputs.count.to_u128(), 2);
 }
 "#,
     )
@@ -364,19 +365,20 @@ fn unlowered_nonblocking_assignments_preserve_scheduling() {
     .unwrap();
     fs::write(output.join("tests/semantics.rs"), r#"
 use generated_nba::{Inputs, Model};
+use verilator_rust_runtime::Bits;
 
 #[test]
 fn preserves_nonblocking_scheduling() {
     assert_eq!(include_str!("expected.txt").lines().count(), 32);
     let mut model = Model::new();
     for (step, line) in include_str!("expected.txt").lines().enumerate() {
-        let inputs = Inputs { reset_n: step != 0 && step != 17,
-            enable: step % 4 != 2, index: step & 1 != 0, data: ((step * 19) & 255) as u8 };
+        let inputs = Inputs { reset_n: Bits::from_bool(step != 0 && step != 17),
+            enable: Bits::from_bool(step % 4 != 2), index: Bits::from_bool(step & 1 != 0), data: Bits::from_u8(((step * 19) & 255) as u8) };
         let evaluation = model.tick(&inputs);
         let actual = evaluation.outputs;
         let expected: Vec<u8> = line.split_whitespace().map(|word| word.parse().unwrap()).collect();
-        assert_eq!([actual.a, actual.b, actual.pipeline, actual.packed_value, actual.temp_result,
-            actual.mem0, actual.mem1, actual.blocking_count, actual.lane0, actual.lane1].as_slice(), expected.as_slice(), "step {step}");
+        assert_eq!([actual.a.to_u128() as u8, actual.b.to_u128() as u8, actual.pipeline.to_u128() as u8, actual.packed_value.to_u128() as u8, actual.temp_result.to_u128() as u8,
+            actual.mem0.to_u128() as u8, actual.mem1.to_u128() as u8, actual.blocking_count.to_u128() as u8, actual.lane0.to_u128() as u8, actual.lane1.to_u128() as u8].as_slice(), expected.as_slice(), "step {step}");
         assert!(evaluation.assertions.assert_pipeline, "pipeline assertion, step {step}");
         assert!(evaluation.assertions.assert_sampled_blocking, "sampled assertion, step {step}");
         assert_eq!(model.eval(&inputs).outputs, actual);
@@ -523,25 +525,16 @@ fn generated_storage_boundaries_preserve_wide_state_and_nonblocking_reads() {
                 },
             });
         }
-        let (maximum, one, zero): (String, String, String) = if width == 1 {
-            ("true".into(), "true".into(), "false".into())
-        } else if width <= 128 {
-            let max = u128::MAX >> (128 - width);
-            (max.to_string(), "1".into(), "0".into())
-        } else {
-            (
-                format!(
-                    "Bits::<{width}, num_bigint::BigUint>::from_words(&[u64::MAX; {}])",
-                    width.div_ceil(64)
-                ),
-                "Bits::from_u8(1)".into(),
-                "Bits::zero()".into(),
-            )
-        };
+        let maximum = format!(
+            "Bits::<{width}, {storage}>::from_words(&[u64::MAX; {}])",
+            width.div_ceil(64)
+        );
+        let one = "Bits::from_u8(1)";
+        let zero = "Bits::zero()";
         smoke.push_str(&format!("inputs.data_w{width} = {maximum};\n"));
         checks.push_str(&format!("assert_eq!(first.outputs.count_w{width}, {maximum});\nassert_eq!(first.outputs.delayed_w{width}, {zero});\n"));
         ones.push_str(&format!("inputs.data_w{width} = {one};\n"));
-        wrapped.push_str(&format!("assert_eq!(second.outputs.count_w{width}, {zero});\nassert_eq!(second.outputs.delayed_w{width}, {maximum});\n"));
+        wrapped.push_str(&format!("assert_eq!(second.outputs.count_w{width}, {zero});\nassert_eq!(second.outputs.delayed_w{width}, {maximum});\nassert_eq!(model.state().count_w{width}, {zero});\nassert_eq!(model.state().delayed_w{width}, {maximum});\n"));
     }
     smoke.push_str("let first = model.tick(&inputs);\nassert_eq!(model.eval(&inputs), first);\n");
     smoke.push_str(&checks);
@@ -563,6 +556,7 @@ fn generated_storage_boundaries_preserve_wide_state_and_nonblocking_reads() {
     )
     .unwrap();
     let library = fs::read_to_string(output.join("src/lib.rs")).unwrap();
+    assert!(!library.contains(".clone()"));
     for (width, storage) in [
         (1, "bool"),
         (8, "u8"),
@@ -570,10 +564,21 @@ fn generated_storage_boundaries_preserve_wide_state_and_nonblocking_reads() {
         (17, "u32"),
         (33, "u64"),
         (65, "u128"),
-        (129, "num_bigint::BigUint"),
-        (257, "num_bigint::BigUint"),
+        (129, "ruint::Uint<129, { ruint::nlimbs(129) }>"),
+        (257, "ruint::Uint<257, { ruint::nlimbs(257) }>"),
     ] {
         assert!(library.contains(&format!("Bits<{width}, {storage}>")));
+    }
+    for (file, field) in [
+        ("input.rs", "data"),
+        ("output.rs", "count"),
+        ("state.rs", "count"),
+    ] {
+        let source = fs::read_to_string(output.join("src").join(file)).unwrap();
+        for width in widths {
+            let parameters = super::util::bits_parameters(width);
+            assert!(source.contains(&format!("pub {field}_w{width}: Bits<{parameters}>")));
+        }
     }
     fs::create_dir_all(output.join("tests")).unwrap();
     fs::write(output.join("tests/storage.rs"), smoke).unwrap();

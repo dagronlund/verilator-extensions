@@ -9,9 +9,9 @@ use crate::storage::{Arithmetic, Storage};
 /// An owned, fixed-width two-state bit vector. Bit zero is the least-significant bit.
 ///
 /// `S` is selected by the generator: `bool` for one bit, the smallest fitting
-/// unsigned primitive through 128 bits, and `num_bigint::BigUint` beyond that.
-/// Unused high bits are always cleared. Primitive-backed vectors implement
-/// `Copy`; `BigUint`-backed vectors must be cloned when ownership is shared.
+/// unsigned primitive through 128 bits, and
+/// `ruint::Uint<WIDTH, { ruint::nlimbs(WIDTH) }>` beyond that.
+/// Unused high bits are always cleared. All supported storage types are `Copy`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Bits<const WIDTH: usize, S: Storage> {
     bits: S,
@@ -242,16 +242,8 @@ impl<const WIDTH: usize, S: Storage> Bits<WIDTH, S> {
         }
         let lhs_negative = self.bit(WIDTH - 1);
         let rhs_negative = rhs.bit(WIDTH - 1);
-        let lhs_magnitude = if lhs_negative {
-            self.negate()
-        } else {
-            self.clone()
-        };
-        let rhs_magnitude = if rhs_negative {
-            rhs.negate()
-        } else {
-            rhs.clone()
-        };
+        let lhs_magnitude = if lhs_negative { self.negate() } else { *self };
+        let rhs_magnitude = if rhs_negative { rhs.negate() } else { *rhs };
         let quotient = lhs_magnitude.div_unsigned(&rhs_magnitude);
         if lhs_negative ^ rhs_negative {
             quotient.negate()

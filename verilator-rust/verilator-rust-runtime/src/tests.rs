@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use num_bigint::BigUint;
+use ruint::{Uint, nlimbs};
 
 use super::{Bits, array_offset};
 
@@ -25,23 +25,23 @@ fn integer_constructors_create_bits_directly() {
 #[test]
 #[should_panic(expected = "bit vector value exceeds usize")]
 fn usize_conversion_overflow_panics() {
-    Bits::<129, BigUint>::from_words(&[0, 0, 1]).to_usize();
+    Bits::<129, Uint<129, { nlimbs(129) }>>::from_words(&[0, 0, 1]).to_usize();
 }
 
 #[test]
 fn arbitrary_width_arithmetic_masks_to_width() {
-    let top = Bits::<129, BigUint>::from_words(&[u64::MAX, u64::MAX, 1]);
-    let one = Bits::<129, BigUint>::from_u8(1);
+    let top = Bits::<129, Uint<129, { nlimbs(129) }>>::from_words(&[u64::MAX, u64::MAX, 1]);
+    let one = Bits::<129, Uint<129, { nlimbs(129) }>>::from_u8(1);
     let sum = top.add(&one);
     assert_eq!(sum.to_u128(), 0);
     assert!(!sum.bit(128));
-    let wide = Bits::<257, BigUint>::from_u8(42);
+    let wide = Bits::<257, Uint<257, { nlimbs(257) }>>::from_u8(42);
     assert_eq!(wide.to_u128(), 42);
-    assert_eq!(Bits::<257, BigUint>::width(), 257);
-    let high = Bits::<129, BigUint>::from_words(&[0, 0, 1]);
+    assert_eq!(Bits::<257, Uint<257, { nlimbs(257) }>>::width(), 257);
+    let high = Bits::<129, Uint<129, { nlimbs(129) }>>::from_words(&[0, 0, 1]);
     assert!(high.bit(128));
     assert_eq!(high.to_words(), vec![0, 0, 1]);
-    let high_value = Bits::<201, BigUint>::from_words(&[1, 0, 0, 256]);
+    let high_value = Bits::<201, Uint<201, { nlimbs(201) }>>::from_words(&[1, 0, 0, 256]);
     assert!(high_value.bit(200));
     assert!(high_value.bit(0));
 }
@@ -85,8 +85,14 @@ fn storage_layout_matches_selected_primitives() {
     assert_eq!(size_of::<Bits<17, u32>>(), size_of::<u32>());
     assert_eq!(size_of::<Bits<33, u64>>(), size_of::<u64>());
     assert_eq!(size_of::<Bits<65, u128>>(), size_of::<u128>());
-    assert_eq!(size_of::<Bits<129, BigUint>>(), size_of::<BigUint>());
-    assert_eq!(size_of::<Bits<4096, BigUint>>(), size_of::<BigUint>());
+    assert_eq!(
+        size_of::<Bits<129, Uint<129, { nlimbs(129) }>>>(),
+        size_of::<[u64; nlimbs(129)]>()
+    );
+    assert_eq!(
+        size_of::<Bits<4096, Uint<4096, { nlimbs(4096) }>>>(),
+        size_of::<[u64; nlimbs(4096)]>()
+    );
 }
 
 fn check_arithmetic<const WIDTH: usize, S: super::storage::Storage>() {
@@ -130,8 +136,8 @@ fn arithmetic_wraps_at_storage_and_rtl_boundaries() {
 }
 
 #[test]
-fn biguint_arithmetic_and_cross_storage_operations() {
-    type Wide = Bits<257, BigUint>;
+fn ruint_arithmetic_and_cross_storage_operations() {
+    type Wide = Bits<257, Uint<257, { nlimbs(257) }>>;
     let top = Wide::from_words(&[u64::MAX; 5]);
     assert_eq!(
         top.to_words(),
@@ -150,16 +156,16 @@ fn biguint_arithmetic_and_cross_storage_operations() {
     assert_eq!(top.div_signed(&one), top);
     assert_eq!(high.div_signed(&top), high); // minimum signed value / -1 wraps
     let negative = Bits::<7, u8>::from_u8(0x7e);
-    let extended = negative.resize::<257, BigUint>(true);
+    let extended = negative.resize::<257, Uint<257, { nlimbs(257) }>>(true);
     assert_eq!(extended, top.sub(&one));
     assert_eq!(extended.resize::<7, u8>(false), negative);
     assert_eq!(extended.select::<128, u128>(127).to_u128(), u128::MAX);
-    let joined = Bits::<129, BigUint>::concat(
+    let joined = Bits::<129, Uint<129, { nlimbs(129) }>>::concat(
         &Bits::<1, bool>::from_bool(true),
         &Bits::<128, u128>::from_u128(42),
     );
     assert_eq!(joined.to_words(), vec![42, 0, 1]);
-    let mut copy = joined.clone();
+    let mut copy = joined;
     copy.assign_select(120, 9, &Bits::<9, u16>::zero());
     assert!(joined.bit(128));
     assert!(!copy.bit(128));
@@ -174,7 +180,10 @@ fn zero_width_is_empty_and_masks_values() {
     assert_eq!(zero.div_unsigned(&zero), zero);
     assert!(zero.reduce_and().truthy());
     assert!(!zero.reduce_or().truthy());
-    assert_eq!(zero.resize::<129, BigUint>(true), Bits::zero());
+    assert_eq!(
+        zero.resize::<129, Uint<129, { nlimbs(129) }>>(true),
+        Bits::zero()
+    );
 }
 
 #[test]
