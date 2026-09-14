@@ -11,8 +11,8 @@ use std::{
 };
 
 use verilator_parser::ast::{
-    AssignmentKind, AssignmentTarget, BinaryOperator, DataType, DataTypeKind, Design, Direction,
-    Domain, Expression, ExpressionKind, Literal, PropertyKind, SignalDomain, Statement,
+    AssignmentKind, AssignmentTarget, BinaryOperator, DataType, DataTypeId, DataTypeKind, Design,
+    Direction, Domain, Expression, ExpressionKind, Literal, PropertyKind, SignalDomain, Statement,
     StatementKind, UnaryOperator, VariableId, collect::CollectAccesses, sequential,
 };
 
@@ -307,6 +307,7 @@ impl<'a> Generator<'a> {
         let mut used_types = BTreeMap::new();
         for reserved in [
             "Bits",
+            "BitSerialize",
             "Inputs",
             "Outputs",
             "State",
@@ -385,22 +386,25 @@ impl<'a> Generator<'a> {
         }
         writeln!(
             lib_rs,
-            "use verilator_rust_runtime::{{Bits, array_offset, bool_and, bool_or, bool_xor}};\n"
+            "use verilator_rust_runtime::{{BitSerialize, Bits, array_offset, bool_and, bool_or, bool_xor}};\n"
         )
         .unwrap();
 
         let mut types_rs = String::from(
-            "//! Generated RTL data types.\n\nuse verilator_rust_runtime::{Bits, array_offset};\n\n",
+            "//! Generated RTL data types.\n\nuse verilator_rust_runtime::{BitSerialize, Bits, array_offset};\n\n",
         );
         self.emit_data_types(&mut types_rs);
-        let mut input_rs =
-            String::from("//! Generated model inputs.\n\nuse verilator_rust_runtime::Bits;\n\n");
+        let mut input_rs = String::from(
+            "//! Generated model inputs.\n\nuse verilator_rust_runtime::{BitSerialize, Bits};\n\n",
+        );
         self.emit_signal_struct("Inputs", &input_fields, &mut input_rs);
-        let mut output_rs =
-            String::from("//! Generated model outputs.\n\nuse verilator_rust_runtime::Bits;\n\n");
+        let mut output_rs = String::from(
+            "//! Generated model outputs.\n\nuse verilator_rust_runtime::{BitSerialize, Bits};\n\n",
+        );
         self.emit_signal_struct("Outputs", &output_fields, &mut output_rs);
-        let mut state_rs =
-            String::from("//! Generated model state.\n\nuse verilator_rust_runtime::Bits;\n\n");
+        let mut state_rs = String::from(
+            "//! Generated model state.\n\nuse verilator_rust_runtime::{BitSerialize, Bits};\n\n",
+        );
         self.emit_signal_struct("State", &state_fields, &mut state_rs);
 
         self.emit_property_struct("Assertions", PropertyKind::Assertion, &mut lib_rs);
@@ -555,12 +559,12 @@ impl Model {{
                 }
                 let elements = indexed.values().copied().collect::<Vec<_>>();
                 let dense = indexed.keys().copied().eq(0..indexed.len());
-                let width = elements
+                let value_type = elements
                     .first()
-                    .map(|id| self.design.data_type(self.design.variable(*id).dtype).width)?;
-                let same_type = (&elements).into_iter().all(|id| {
-                    self.design.data_type(self.design.variable(*id).dtype).width == width
-                });
+                    .map(|id| self.value_type(self.design.variable(*id).dtype))?;
+                let same_type = (&elements)
+                    .into_iter()
+                    .all(|id| self.value_type(self.design.variable(*id).dtype) == value_type);
                 (dense && same_type).then_some((base, elements))
             })
             .collect::<BTreeMap<_, _>>();
@@ -597,12 +601,84 @@ impl Model {{
         fields
     }
 
+    fn value_type(&self, dtype: DataTypeId) -> String {
+        let data_type = self.design.data_type(dtype);
+        if let DataTypeKind::Basic { .. } = data_type.kind {
+            return format!("Bits<{}>", bits_parameters(data_type.width));
+        }
+        self.type_names[dtype.0]
+            .as_ref()
+            .map(|name| format!("crate::types::{name}"))
+            .unwrap_or_else(|| format!("Bits<{}>", bits_parameters(data_type.width)))
+    }
+
+    fn emit_wrapper_serialization(&self, name: &str, width: usize, source: &mut String) {
+        let parameters = bits_parameters(width);
+        writeln!(
+            source,
+            "impl BitSerialize for {name} {{
+    type Packed = Bits<{parameters}>;
+    fn serialize(&self) -> Self::Packed {{ self.0 }}
+    fn deserialize(bits: &Self::Packed) -> Self {{ Self(*bits) }}
+}}\n"
+        )
+        .unwrap();
+    }
+
+    fn emit_signal_serialization(&self, name: &str, fields: &[SignalField], source: &mut String) {
+        let width: usize = fields
+            .into_iter()
+            .flat_map(|field| &field.ids)
+            .map(|id| self.design.data_type(self.design.variable(*id).dtype).width)
+            .sum();
+        let parameters = bits_parameters(width);
+        writeln!(source, "impl BitSerialize for {name} {{\n    type Packed = Bits<{parameters}>;\n    fn serialize(&self) -> Self::Packed {{\n        let mut bits = Self::Packed::zero();").unwrap();
+        let mut offset = 0;
+        for field in fields {
+            for (index, id) in (&field.ids).into_iter().enumerate() {
+                let width = self.design.data_type(self.design.variable(*id).dtype).width;
+                let access = if field.array {
+                    format!("{}[{index}]", field.name)
+                } else {
+                    field.name.clone()
+                };
+                writeln!(
+                    source,
+                    "        bits.assign_select({offset}, {width}, &BitSerialize::serialize(&self.{access}));"
+                )
+                .unwrap();
+                offset += width;
+            }
+        }
+        writeln!(source, "        bits\n    }}\n    fn deserialize(bits: &Self::Packed) -> Self {{\n        Self {{").unwrap();
+        offset = 0;
+        for field in fields {
+            let mut values = Vec::new();
+            for id in &field.ids {
+                let dtype = self.design.variable(*id).dtype;
+                let width = self.design.data_type(dtype).width;
+                let ty = self.value_type(dtype);
+                let parameters = bits_parameters(width);
+                values.push(format!(
+                    "<{ty} as BitSerialize>::deserialize(&bits.select::<{parameters}>({offset}))"
+                ));
+                offset += width;
+            }
+            let value = if field.array {
+                format!("[{}]", values.join(", "))
+            } else {
+                values.remove(0)
+            };
+            writeln!(source, "            {}: {value},", field.name).unwrap();
+        }
+        writeln!(source, "        }}\n    }}\n}}\n").unwrap();
+    }
+
     fn emit_signal_struct(&self, name: &str, fields: &[SignalField], source: &mut String) {
         writeln!(source, "#[derive(Clone, Debug, Default, PartialEq, Eq)]").unwrap();
         writeln!(source, "pub struct {name} {{").unwrap();
         for field in fields {
             let variable = self.design.variable(field.ids[0]);
-            let width = self.design.data_type(variable.dtype).width;
             if field.array {
                 writeln!(
                     source,
@@ -616,7 +692,7 @@ impl Model {{
             } else {
                 writeln!(source, "    /// RTL signal {:?}.", variable.display_name()).unwrap();
             }
-            let value_type = format!("Bits<{}>", bits_parameters(width));
+            let value_type = self.value_type(variable.dtype);
             let field_type = if field.array {
                 format!("[{value_type}; {}]", field.ids.len())
             } else {
@@ -625,6 +701,7 @@ impl Model {{
             writeln!(source, "    pub {}: {},", field.name, field_type).unwrap();
         }
         writeln!(source, "}}\n").unwrap();
+        self.emit_signal_serialization(name, fields, source);
     }
 
     fn emit_property_struct(&self, name: &str, kind: PropertyKind, source: &mut String) {
@@ -654,7 +731,12 @@ impl Model {{
                 } else {
                     format!("inputs.{}", field.name)
                 };
-                writeln!(source, "    env.v{} = {value};", id.0).unwrap();
+                writeln!(
+                    source,
+                    "    env.v{} = BitSerialize::serialize(&{value});",
+                    id.0
+                )
+                .unwrap();
             }
         }
         writeln!(source, "}}\n").unwrap();
@@ -1047,7 +1129,10 @@ impl Model {{
         for field in fields {
             let values = (&field.ids)
                 .into_iter()
-                .map(|id| format!("env.v{}", id.0))
+                .map(|id| {
+                    let ty = self.value_type(self.design.variable(*id).dtype);
+                    format!("<{ty} as BitSerialize>::deserialize(&env.v{})", id.0)
+                })
                 .collect::<Vec<_>>();
             if field.array {
                 writeln!(source, "        {}: [", field.name).unwrap();
@@ -1083,7 +1168,10 @@ impl Model {{
         for field in output_fields {
             let values = (&field.ids)
                 .into_iter()
-                .map(|id| format!("env.v{}", id.0))
+                .map(|id| {
+                    let ty = self.value_type(self.design.variable(*id).dtype);
+                    format!("<{ty} as BitSerialize>::deserialize(&env.v{})", id.0)
+                })
                 .collect::<Vec<_>>();
             if field.array {
                 writeln!(source, "            {}: [", field.name).unwrap();
@@ -1189,9 +1277,10 @@ impl Model {{
                     }
                     writeln!(source, "}}\n").unwrap();
                 }
-                DataTypeKind::PackedArray { declared, .. } => {
+                DataTypeKind::PackedArray { declared, element } => {
                     let element_width = width / declared.len();
                     let element_type = bits_parameters(element_width);
+                    let element_value_type = self.value_type(*element);
                     writeln!(
                         source,
                         "/// Lossless packed representation of RTL datatype {rtl_name:?}.
@@ -1200,12 +1289,12 @@ pub struct {name}(pub Bits<{width_type}>);
 
 
 impl {name} {{
-    pub fn get(&self, index: usize) -> Bits<{element_type}> {{
-        self.0.select::<{element_type}>(array_offset(index, {left}, {right}, {element_width}))
+    pub fn get(&self, index: usize) -> {element_value_type} {{
+        <{element_value_type} as BitSerialize>::deserialize(&self.0.select::<{element_type}>(array_offset(index, {left}, {right}, {element_width})))
     }}
-    pub fn set(&mut self, index: usize, value: Bits<{element_type}>) {{
+    pub fn set(&mut self, index: usize, value: {element_value_type}) {{
         let offset = array_offset(index, {left}, {right}, {element_width});
-        self.0.assign_select(offset, {element_width}, &value);
+        self.0.assign_select(offset, {element_width}, &BitSerialize::serialize(&value));
     }}
 }}
 ",
@@ -1215,7 +1304,8 @@ impl {name} {{
                     )
                     .unwrap();
                 }
-                DataTypeKind::UnpackedArray { .. } => {
+                DataTypeKind::UnpackedArray { element, .. } => {
+                    let element_value_type = self.value_type(*element);
                     let layout = dtype.unpacked.as_ref().unwrap();
                     writeln!(
                         source,
@@ -1225,12 +1315,12 @@ pub struct {name}(pub Bits<{width_type}>);
 
 
 impl {name} {{
-    pub fn get(&self, index: usize) -> Bits<{element_type}> {{
-        self.0.select::<{element_type}>(array_offset(index, {left}, {right}, {element_width}))
+    pub fn get(&self, index: usize) -> {element_value_type} {{
+        <{element_value_type} as BitSerialize>::deserialize(&self.0.select::<{element_type}>(array_offset(index, {left}, {right}, {element_width})))
     }}
-    pub fn set(&mut self, index: usize, value: Bits<{element_type}>) {{
+    pub fn set(&mut self, index: usize, value: {element_value_type}) {{
         let offset = array_offset(index, {left}, {right}, {element_width});
-        self.0.assign_select(offset, {element_width}, &value);
+        self.0.assign_select(offset, {element_width}, &BitSerialize::serialize(&value));
     }}
 }}
 ",
@@ -1242,7 +1332,39 @@ impl {name} {{
                     )
                     .unwrap();
                 }
-                DataTypeKind::PackedStruct { members } | DataTypeKind::PackedUnion { members } => {
+                DataTypeKind::PackedStruct { members } => {
+                    let member_names = unique_names(
+                        members
+                            .into_iter()
+                            .map(|member| snake_identifier(&member.name)),
+                    );
+                    writeln!(source, "/// RTL packed struct {rtl_name:?}.\n#[derive(Clone, Debug, Default, PartialEq, Eq)]\npub struct {name} {{", rtl_name = dtype.name.as_deref().unwrap_or("anonymous")).unwrap();
+                    for (member, field) in members.into_iter().zip(&member_names) {
+                        writeln!(
+                            source,
+                            "    pub {field}: {},",
+                            self.value_type(member.dtype)
+                        )
+                        .unwrap();
+                    }
+                    writeln!(source, "}}\nimpl BitSerialize for {name} {{\n    type Packed = Bits<{width_type}>;\n    fn serialize(&self) -> Self::Packed {{\n        let mut bits = Self::Packed::zero();").unwrap();
+                    for (member, field) in members.into_iter().zip(&member_names) {
+                        writeln!(
+                            source,
+                            "        bits.assign_select({}, {}, &BitSerialize::serialize(&self.{field}));",
+                            member.lsb, member.width
+                        )
+                        .unwrap();
+                    }
+                    writeln!(source, "        bits\n    }}\n    fn deserialize(bits: &Self::Packed) -> Self {{\n        Self {{").unwrap();
+                    for (member, field) in members.into_iter().zip(&member_names) {
+                        let ty = self.value_type(member.dtype);
+                        let parameters = bits_parameters(member.width);
+                        writeln!(source, "            {field}: <{ty} as BitSerialize>::deserialize(&bits.select::<{parameters}>({})),", member.lsb).unwrap();
+                    }
+                    writeln!(source, "        }}\n    }}\n}}\n").unwrap();
+                }
+                DataTypeKind::PackedUnion { members } => {
                     writeln!(
                         source,
                         "/// Lossless packed representation of RTL datatype {rtl_name:?}.
@@ -1262,14 +1384,15 @@ impl {name} {{",
                         writeln!(
                             source,
                             "
-    pub fn {member_name}(&self) -> Bits<{width_type}> {{
-        self.0.select::<{width_type}>({lsb})
+    pub fn {member_name}(&self) -> {member_type} {{
+        <{member_type} as BitSerialize>::deserialize(&self.0.select::<{width_type}>({lsb}))
     }}
-    pub fn set_{member_name}(&mut self, value: Bits<{width_type}>) {{
-        self.0.assign_select({lsb}, {width}, &value);
+    pub fn set_{member_name}(&mut self, value: {member_type}) {{
+        self.0.assign_select({lsb}, {width}, &BitSerialize::serialize(&value));
     }}
 ",
                             width = member.width,
+                            member_type = self.value_type(member.dtype),
                             width_type = bits_parameters(member.width),
                             lsb = member.lsb,
                         )
@@ -1277,6 +1400,15 @@ impl {name} {{",
                     }
                     writeln!(source, "}}\n").unwrap();
                 }
+            }
+            match &dtype.kind {
+                DataTypeKind::Enum { .. }
+                | DataTypeKind::PackedArray { .. }
+                | DataTypeKind::UnpackedArray { .. }
+                | DataTypeKind::PackedUnion { .. } => {
+                    self.emit_wrapper_serialization(name, width, source);
+                }
+                _ => {}
             }
         }
     }

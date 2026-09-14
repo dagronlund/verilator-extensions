@@ -17,6 +17,28 @@ pub struct Bits<const WIDTH: usize, S: Storage> {
     bits: S,
 }
 
+/// Lossless conversion between an RTL value and its packed two-state bits.
+///
+/// Packed structs use their RTL member offsets. Signal containers place their
+/// first declared field at bit zero, then subsequent fields above it; grouped
+/// arrays place element zero first. Deserialization preserves every bit pattern,
+/// including unnamed enum values.
+pub trait BitSerialize: Sized {
+    type Packed;
+    fn serialize(&self) -> Self::Packed;
+    fn deserialize(bits: &Self::Packed) -> Self;
+}
+
+impl<const WIDTH: usize, S: Storage> BitSerialize for Bits<WIDTH, S> {
+    type Packed = Self;
+    fn serialize(&self) -> Self {
+        *self
+    }
+    fn deserialize(bits: &Self) -> Self {
+        *bits
+    }
+}
+
 macro_rules! primitive_constants {
     ($($ty:ty),*) => {$(
         impl<const WIDTH: usize> Bits<WIDTH, $ty> {

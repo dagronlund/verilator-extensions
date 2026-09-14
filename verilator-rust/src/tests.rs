@@ -7,9 +7,9 @@ use std::{
 use verilator_parser::{
     ast::{
         AccessMode, AssignmentKind, AssignmentTarget, BinaryOperator, DataType, DataTypeId,
-        DataTypeKind, Design, Direction, Domain, Edge, EnumVariant, Expression, ExpressionKind,
-        Literal, SignalDomain, SourceInfo, Statement, StatementKind, Variable, VariableId,
-        VariableKind, range::Range,
+        DataTypeKind, DataTypeMember, Design, Direction, Domain, Edge, EnumVariant, Expression,
+        ExpressionKind, Literal, SignalDomain, SourceInfo, Statement, StatementKind, Variable,
+        VariableId, VariableKind, range::Range,
     },
     document::AstDocument,
 };
@@ -221,20 +221,65 @@ fn generates_every_cached_fixture() {
             fs::write(library, source).unwrap();
             fs::write(
                 output.join("src/tests.rs"),
-                r#"use super::{Inputs, Model};
+                r#"use super::{Inputs, Model, Outputs, State};
+use verilator_rust_runtime::BitSerialize;
 
 #[test]
 fn eval_and_tick_once() {
     let mut model = Model::new();
     let inputs = Inputs::default();
-    let _ = model.eval(&inputs);
-    let _ = model.tick(&inputs);
+    assert_eq!(Inputs::deserialize(&inputs.serialize()), inputs);
+    let evaluation = model.tick(&inputs);
+    assert_eq!(Outputs::deserialize(&evaluation.outputs.serialize()), evaluation.outputs);
+    assert_eq!(State::deserialize(&model.state().serialize()), *model.state());
 }
 "#,
             )
             .unwrap();
         }
 
+        if fixture == "data_types" {
+            let file = output.join("src/tests.rs");
+            let mut source = fs::read_to_string(&file).unwrap();
+            source.push_str(
+                r#"
+use super::{RecordT, OverlayT, MatrixT, StateT};
+use verilator_rust_runtime::Bits;
+
+#[test]
+fn record_layout_and_nested_array_roundtrips() {
+    for raw in 0..=u16::MAX {
+        let bits = Bits::from_u16(raw);
+        let record = RecordT::deserialize(&bits);
+        assert_eq!(record.payload.serialize().to_u128(), (raw >> 8) as u128);
+        assert_eq!(record.state.serialize().to_u128(), ((raw >> 6) & 3) as u128);
+        assert_eq!(record.flags.to_u128(), (raw & 63) as u128);
+        assert_eq!(record.serialize(), bits);
+    }
+    let mut record = RecordT::default();
+    record.payload.set(0, Bits::from_u8(0xa));
+    record.payload.set(1, Bits::from_u8(0xb));
+    record.state = StateT::RUNNING;
+    record.flags = Bits::from_u8(12);
+    // Array offset zero corresponds to the declared left bound.
+    assert_eq!(record.serialize().to_u128(), 0xba4c);
+    let mut overlay = OverlayT::default();
+    overlay.set_fields(record.clone());
+    assert_eq!(overlay.raw().to_u128(), 0xba4c);
+    overlay.set_raw(Bits::from_u16(0x1234));
+    assert_eq!(overlay.fields().serialize().to_u128(), 0x1234);
+    let mut matrix = MatrixT::default();
+    let mut row = matrix.get(2);
+    row.set(1, record.clone());
+    matrix.set(2, row);
+    assert_eq!(matrix.get(2).get(1), record);
+    assert_eq!(matrix.serialize().to_u128(), 0xba4cu128 << 64);
+    assert_eq!(MatrixT::deserialize(&matrix.serialize()), matrix);
+}
+"#,
+            );
+            fs::write(file, source).unwrap();
+        }
         let status = Command::new("cargo")
             .args([
                 if fixture == "gecko_core" {
@@ -536,13 +581,164 @@ fn generated_storage_boundaries_preserve_wide_state_and_nonblocking_reads() {
         ones.push_str(&format!("inputs.data_w{width} = {one};\n"));
         wrapped.push_str(&format!("assert_eq!(second.outputs.count_w{width}, {zero});\nassert_eq!(second.outputs.delayed_w{width}, {maximum});\nassert_eq!(model.state().count_w{width}, {zero});\nassert_eq!(model.state().delayed_w{width}, {maximum});\n"));
     }
+    let flag_dtype = DataTypeId(0);
+    let wide_dtype = DataTypeId(
+        (&design.data_types)
+            .into_iter()
+            .position(|dtype| dtype.width == 129)
+            .unwrap(),
+    );
+    let header_dtype = DataTypeId(design.data_types.len());
+    let header_range = Range {
+        left: 129,
+        right: 0,
+    };
+    design.data_types.push(DataType {
+        source: source.clone(),
+        name: Some("header".into()),
+        width: 130,
+        indices: header_range,
+        signed: false,
+        unpacked: None,
+        kind: DataTypeKind::PackedStruct {
+            members: vec![
+                DataTypeMember {
+                    source: source.clone(),
+                    name: "flag".into(),
+                    dtype: flag_dtype,
+                    width: 1,
+                    lsb: 129,
+                },
+                DataTypeMember {
+                    source: source.clone(),
+                    name: "data".into(),
+                    dtype: wide_dtype,
+                    width: 129,
+                    lsb: 0,
+                },
+            ],
+        },
+    });
+    let packet_dtype = DataTypeId(design.data_types.len());
+    design.data_types.push(DataType {
+        source: source.clone(),
+        name: Some("packet".into()),
+        width: 260,
+        indices: Range {
+            left: 259,
+            right: 0,
+        },
+        signed: false,
+        unpacked: None,
+        kind: DataTypeKind::PackedStruct {
+            members: vec![
+                DataTypeMember {
+                    source: source.clone(),
+                    name: "first".into(),
+                    dtype: header_dtype,
+                    width: 130,
+                    lsb: 130,
+                },
+                DataTypeMember {
+                    source: source.clone(),
+                    name: "second".into(),
+                    dtype: header_dtype,
+                    width: 130,
+                    lsb: 0,
+                },
+            ],
+        },
+    });
+    let input_id = VariableId(design.variables.len());
+    for (name, direction) in [
+        ("packet", Direction::Input),
+        ("packet_out", Direction::Output),
+    ] {
+        design.variables.push(Variable {
+            source: source.clone(),
+            name: name.into(),
+            original_name: None,
+            dtype: packet_dtype,
+            direction,
+            kind: VariableKind::Port,
+            top_level: true,
+            internal: false,
+            sampled_value: None,
+            property: None,
+        });
+    }
+    design.sequential.push(Statement {
+        source: source.clone(),
+        kind: StatementKind::Assignment {
+            kind: AssignmentKind::Nonblocking,
+            target: AssignmentTarget::Variable {
+                variable: VariableId(input_id.0 + 1),
+                access: AccessMode::Write,
+            },
+            value: Expression {
+                source: source.clone(),
+                dtype: packet_dtype,
+                kind: ExpressionKind::Variable {
+                    variable: input_id,
+                    access: AccessMode::Read,
+                },
+            },
+        },
+    });
+    let twin_dtype = DataTypeId(design.data_types.len());
+    let mut twin = design.data_types[header_dtype.0].clone();
+    twin.name = Some("twin".into());
+    design.data_types.push(twin);
+    for (name, dtype) in [
+        ("lane_v0", header_dtype),
+        ("lane_v1", header_dtype),
+        ("mixed_v0", header_dtype),
+        ("mixed_v1", twin_dtype),
+    ] {
+        design.variables.push(Variable {
+            source: source.clone(),
+            name: name.into(),
+            original_name: None,
+            dtype,
+            direction: Direction::Input,
+            kind: VariableKind::Port,
+            top_level: true,
+            internal: false,
+            sampled_value: None,
+            property: None,
+        });
+    }
     smoke.push_str("let first = model.tick(&inputs);\nassert_eq!(model.eval(&inputs), first);\n");
     smoke.push_str(&checks);
     smoke.push_str(&ones);
     smoke.push_str("let second = model.tick(&inputs);\nassert_eq!(model.eval(&inputs), second);\n");
     smoke.push_str(&wrapped);
     smoke.push_str(&checks); // Previously returned wide values must remain unchanged.
-    smoke.push_str("}\n");
+    smoke.push_str(
+        r#"
+use generated_storage::{Header, Packet, Outputs, State};
+use verilator_rust_runtime::BitSerialize;
+let packet = Packet {
+    first: Header { flag: Bits::from_bool(true), data: Bits::from_words(&[42, 0, 1]) },
+    second: Header { flag: Bits::from_bool(false), data: Bits::from_words(&[7, 0, 1]) },
+};
+let packed = packet.serialize();
+assert_eq!(packed.to_words(), vec![7, 0, 169, 0, 12]);
+assert_eq!(Packet::deserialize(&packed), packet);
+inputs.packet = packet.clone();
+inputs.lane[0] = packet.first.clone();
+inputs.lane[1] = packet.second.clone();
+inputs.mixed_v0 = packet.first.clone();
+inputs.mixed_v1 = generated_storage::Twin::deserialize(&packet.second.serialize());
+assert_eq!(Inputs::deserialize(&inputs.serialize()), inputs);
+let evaluation = model.tick(&inputs);
+assert_eq!(evaluation.outputs.packet_out, packet);
+assert_eq!(model.state().packet_out, packet);
+assert_eq!(Outputs::deserialize(&evaluation.outputs.serialize()), evaluation.outputs);
+assert_eq!(State::deserialize(&model.state().serialize()), *model.state());
+}
+"#,
+    );
     let output =
         std::env::temp_dir().join(format!("verilator-rust-storage-{}", std::process::id()));
     replace_generated_project(

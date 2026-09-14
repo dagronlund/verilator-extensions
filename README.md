@@ -287,9 +287,9 @@ and `State` definitions and trait implementations are written to
 and root re-exports remain in `src/lib.rs`.
 
 Simulation is deterministic and two-state. Uninitialized values start at zero,
-then retained static initializers and `initial` statements execute once. Every
-`Inputs`, `Outputs`, and `State` field uses `Bits<WIDTH, Storage>` (or an array of
-these values), including one-bit fields. The generator selects `bool`, `u8`,
+then retained static initializers and `initial` statements execute once.
+`Inputs`, `Outputs`, and `State` fields use their generated RTL datatype when
+available, or `Bits<WIDTH, Storage>` for basic values, including one-bit fields. The generator selects `bool`, `u8`,
 `u16`, `u32`, `u64`, or `u128` storage for widths through 128 bits, and
 `ruint::Uint<WIDTH, { ruint::nlimbs(WIDTH) }>` above that. All backing types
 are `Copy`. Generated public wrappers preserve named
@@ -298,6 +298,27 @@ unique generated Rust names. Assertions report
 `true` when they hold; assumptions and covers report their active expression.
 Signals with a dense trailing Verilator suffix from `_v0` through `_vN` and a
 common value type are exposed as one Rust array field with the suffix removed.
+
+Packed structs have public, typed member fields rather than a single packed
+wrapper. The runtime's `BitSerialize` trait provides `serialize(&self)` and
+`deserialize(&bits)`, with an associated `Packed` type of `Bits<WIDTH, Storage>`.
+Struct serialization uses the RTL member offsets, preserving nested layouts and
+all enum bit patterns. Arrays expose typed element accessors; unions retain shared
+packed storage with typed accessors so overlapping members stay consistent.
+
+```rust
+use verilator_rust_runtime::{BitSerialize, Bits};
+
+let mut record = generated_data_types::RecordT::default();
+record.flags = Bits::from_u8(12);
+let packed = record.serialize();
+let restored = generated_data_types::RecordT::deserialize(&packed);
+assert_eq!(restored, record);
+```
+
+`Inputs`, `Outputs`, and `State` also implement `BitSerialize`. Their first field
+occupies the least-significant bits, followed by successive fields in declaration
+order. Grouped arrays serialize element zero first.
 
 Unsupported constructs produce conversion errors with the Verilator node type
 and source location. The initial boundary excludes multiple or asynchronous
