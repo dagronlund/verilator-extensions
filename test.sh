@@ -4,7 +4,7 @@ set -eu
 
 repository_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$repository_directory"
-binary="$repository_directory/target/debug/verilator-formal"
+binary="$repository_directory/target/debug/formal"
 
 # Build the project before running tests
 cargo build

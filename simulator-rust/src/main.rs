@@ -1,11 +1,11 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::Parser;
-use verilator_parser::{
+use parser_verilator::{
     ast::{Design, Domain},
     document::AstDocument,
 };
-use verilator_rust::{GenerateOptions, generate_project};
+use simulator_rust::{GenerateOptions, generate_project};
 
 #[derive(Debug, Parser)]
 #[command(about = "Generate a Rust simulator from a Verilator JSON AST")]

@@ -6,11 +6,7 @@ use std::{
     time::Instant,
 };
 
-use verilator_parser::{
-    ast::{BlockKind, Design, Domain, Edge, ExpressionKind, StatementKind},
-    document::AstDocument,
-};
-use verilator_utils::{
+use formal_utils::{
     formats::aiger::{
         AigerVersion,
         ascii::{read_aiger_ascii, write_aiger_ascii},
@@ -18,6 +14,10 @@ use verilator_utils::{
     },
     fsm::{FSM, verify::VerifyOrdering},
     sim::Simulator,
+};
+use parser_verilator::{
+    ast::{BlockKind, Design, Domain, Edge, ExpressionKind, StatementKind},
+    document::AstDocument,
 };
 
 use crate::convert::{NamedFsm, NamedProperty, NamedSignal};
@@ -649,7 +649,7 @@ impl TempDirectory {
     fn new(fixture: &str) -> Self {
         let sequence = NEXT_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
         let path = env::temp_dir().join(format!(
-            "verilator-formal-ric3-{}-{sequence}-{fixture}",
+            "formal-ric3-{}-{sequence}-{fixture}",
             std::process::id()
         ));
         fs::create_dir(&path).unwrap_or_else(|error| {
@@ -726,7 +726,7 @@ fn verify_with_ric3(model: &NamedFsm, expected_sat_assertions: &[&str]) {
 
 fn verify_property_with_ric3(
     prepared_fsm: &FSM,
-    assertion: (verilator_utils::value::Value, Option<String>),
+    assertion: (formal_utils::value::Value, Option<String>),
     path: &Path,
     property_name: &str,
     expected: &str,
@@ -1383,7 +1383,7 @@ fn verify_aag_export(model: &mut NamedFsm) {
     assert!(named_binary.len() > stripped_binary.len());
 }
 
-fn clear_symbols(fsm: &mut verilator_utils::fsm::FSM) {
+fn clear_symbols(fsm: &mut formal_utils::fsm::FSM) {
     for variable_index in 0..fsm.get_num_variables() {
         *fsm.get_variable_label_mut(variable_index) = None;
     }

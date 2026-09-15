@@ -114,6 +114,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "formal"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "formal-utils",
+ "parser-verilator",
+ "ron",
+]
+
+[[package]]
+name = "formal-utils"
+version = "0.1.0"
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -176,6 +190,16 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "parser-verilator"
+version = "0.1.0"
+dependencies = [
+ "num-bigint",
+ "ron",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "proc-macro2"
@@ -268,6 +292,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "simulator-rust"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "parser-verilator",
+]
+
+[[package]]
+name = "simulator-rust-runtime"
+version = "0.1.0"
+dependencies = [
+ "ruint",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -301,45 +340,6 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
-name = "verilator-formal"
-version = "0.1.0"
-dependencies = [
- "clap",
- "ron",
- "verilator-parser",
- "verilator-utils",
-]
-
-[[package]]
-name = "verilator-parser"
-version = "0.1.0"
-dependencies = [
- "num-bigint",
- "ron",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "verilator-rust"
-version = "0.1.0"
-dependencies = [
- "clap",
- "verilator-parser",
-]
-
-[[package]]
-name = "verilator-rust-runtime"
-version = "0.1.0"
-dependencies = [
- "ruint",
-]
-
-[[package]]
-name = "verilator-utils"
-version = "0.1.0"
 
 [[package]]
 name = "windows-link"

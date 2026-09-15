@@ -1,4 +1,4 @@
-use verilator_utils::{fsm::FSM, gate::GateType, value::Value};
+use formal_utils::{fsm::FSM, gate::GateType, value::Value};
 
 /// The operation performed by [`FsmOps::create_comparison`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub enum ShiftOperation {
     RotateRight,
 }
 
-/// Local word-level operation builders for a verilator-utils FSM.
+/// Local word-level operation builders for a formal-utils FSM.
 ///
 /// This is an extension trait because Rust does not permit adding inherent
 /// methods to [`FSM`] outside the crate that defines it.
@@ -346,7 +346,7 @@ fn create_conditional_negation(fsm: &mut FSM, value: &[Value], negate: Value) ->
 
 #[cfg(test)]
 mod tests {
-    use verilator_utils::{fsm::FSM, sim::Simulator, value::Value};
+    use formal_utils::{fsm::FSM, sim::Simulator, value::Value};
 
     use crate::ops::{FsmOps, ShiftOperation};
 

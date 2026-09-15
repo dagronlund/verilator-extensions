@@ -3,7 +3,13 @@ use std::{
     mem,
 };
 
-use verilator_parser::{
+use formal_utils::{
+    fsm::{FSM, verify::VerifyOrdering},
+    gate::GateType,
+    sim::Simulator,
+    value::Value,
+};
+use parser_verilator::{
     ast::{
         AssignmentKind, AssignmentTarget, BinaryOperator, DataType, Design, Direction, Domain,
         Edge, Expression, ExpressionKind, PropertyKind, SignalDomain, SourceInfo, Statement,
@@ -11,12 +17,6 @@ use verilator_parser::{
         sequential,
     },
     document::AstDocument,
-};
-use verilator_utils::{
-    fsm::{FSM, verify::VerifyOrdering},
-    gate::GateType,
-    sim::Simulator,
-    value::Value,
 };
 
 use crate::ops::{Comparison, FsmOps, ShiftOperation};

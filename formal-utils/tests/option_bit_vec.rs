@@ -1,4 +1,4 @@
-use verilator_utils::option_bit_vec::OptionBitVec;
+use formal_utils::option_bit_vec::OptionBitVec;
 
 #[test]
 fn test_option_bit_vec() {

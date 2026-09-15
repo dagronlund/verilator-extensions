@@ -1,13 +1,13 @@
 use std::{fs, path::PathBuf, process::ExitCode};
 
 use clap::Parser;
-use verilator_utils::{
+use formal_utils::{
     formats::aiger::{AigerVersion, ascii::write_aiger_ascii, binary::write_aiger_binary},
     fsm::{FSM, verify::VerifyOrdering},
 };
 
-use verilator_formal::convert::NamedFsm;
-use verilator_parser::{
+use formal::convert::NamedFsm;
+use parser_verilator::{
     ast::{Design, Domain},
     document::AstDocument,
 };

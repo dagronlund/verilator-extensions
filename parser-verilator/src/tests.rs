@@ -531,7 +531,7 @@ fn find_ast(directory: &Path) -> Result<PathBuf, String> {
 fn rejects_verilator_lowered_nba_ast() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/counter");
     let output =
-        std::env::temp_dir().join(format!("verilator-parser-lowered-{}", std::process::id()));
+        std::env::temp_dir().join(format!("parser-verilator-lowered-{}", std::process::id()));
     fs::create_dir_all(&output).unwrap();
     let ast = output.join("ast.json");
     let status = Command::new("verilator")

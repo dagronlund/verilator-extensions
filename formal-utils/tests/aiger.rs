@@ -1,4 +1,4 @@
-use verilator_utils::{
+use formal_utils::{
     formats::aiger::{
         AigerVersion,
         ascii::{read_aiger_ascii, write_aiger_ascii},

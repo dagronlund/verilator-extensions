@@ -1,4 +1,4 @@
-use verilator_parser::ast::SourceInfo;
+use parser_verilator::ast::SourceInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerateError(String);

@@ -4,7 +4,7 @@ use std::{
     process::Command,
 };
 
-use verilator_parser::{
+use parser_verilator::{
     ast::{
         AccessMode, AssignmentKind, AssignmentTarget, BinaryOperator, DataType, DataTypeId,
         DataTypeKind, DataTypeMember, Design, Direction, Domain, Edge, EnumVariant, Expression,
@@ -41,10 +41,10 @@ fn computes_relative_runtime_paths() {
     assert_eq!(
         relative_path(
             PathBuf::from("/workspace/output/model").as_path(),
-            PathBuf::from("/workspace/verilator-rust/verilator-rust-runtime").as_path(),
+            PathBuf::from("/workspace/simulator-rust/simulator-rust-runtime").as_path(),
         )
         .unwrap(),
-        PathBuf::from("../../verilator-rust/verilator-rust-runtime")
+        PathBuf::from("../../simulator-rust/simulator-rust-runtime")
     );
 }
 
@@ -57,7 +57,7 @@ fn generates_a_counter_project_with_relative_runtime() {
     }
     let document = AstDocument::from_path(ast).unwrap();
     let design = Design::try_from(&document).unwrap();
-    let output = std::env::temp_dir().join(format!("verilator-rust-test-{}", std::process::id()));
+    let output = std::env::temp_dir().join(format!("simulator-rust-test-{}", std::process::id()));
     if output.exists() {
         fs::remove_dir_all(&output).unwrap();
     }
@@ -72,7 +72,7 @@ fn generates_a_counter_project_with_relative_runtime() {
     )
     .unwrap();
     let manifest = fs::read_to_string(output.join("Cargo.toml")).unwrap();
-    assert!(manifest.contains("verilator-rust-runtime = { path = \".."));
+    assert!(manifest.contains("simulator-rust-runtime = { path = \".."));
     assert!(!manifest.contains("path = \"/"));
     let library = fs::read_to_string(output.join("src/lib.rs")).unwrap();
     assert!(library.contains("pub use input::Inputs;"));
@@ -108,7 +108,7 @@ fn generates_a_counter_project_with_relative_runtime() {
         output.join("tests/smoke.rs"),
         r#"
 use generated_counter::{Inputs, Model};
-use verilator_rust_runtime::Bits;
+use simulator_rust_runtime::Bits;
 
 #[test]
 fn reset_increment_and_hold() {
@@ -147,7 +147,7 @@ fn generates_settling_loop_for_unorderable_combinational_fixture() {
     let document = AstDocument::from_path(fixture.join("build/ast.json")).unwrap();
     let design = Design::try_from(&document).unwrap();
     let output = std::env::temp_dir().join(format!(
-        "verilator-rust-combinational-loops-test-{}",
+        "simulator-rust-combinational-loops-test-{}",
         std::process::id()
     ));
     if output.exists() {
@@ -222,7 +222,7 @@ fn generates_every_cached_fixture() {
             fs::write(
                 output.join("src/tests.rs"),
                 r#"use super::{Inputs, Model, Outputs, State};
-use verilator_rust_runtime::BitSerialize;
+use simulator_rust_runtime::BitSerialize;
 
 #[test]
 fn eval_and_tick_once() {
@@ -244,7 +244,7 @@ fn eval_and_tick_once() {
             source.push_str(
                 r#"
 use super::{RecordT, OverlayT, MatrixT, StateT};
-use verilator_rust_runtime::Bits;
+use simulator_rust_runtime::Bits;
 
 #[test]
 fn record_layout_and_nested_array_roundtrips() {
@@ -357,7 +357,7 @@ fn refuses_to_overwrite_a_nonempty_directory() {
     let document = AstDocument::from_path(ast).unwrap();
     let design = Design::try_from(&document).unwrap();
     let output =
-        std::env::temp_dir().join(format!("verilator-rust-nonempty-{}", std::process::id()));
+        std::env::temp_dir().join(format!("simulator-rust-nonempty-{}", std::process::id()));
     fs::create_dir_all(&output).unwrap();
     fs::write(output.join("keep"), "user data").unwrap();
     let error = generate_project(
@@ -391,7 +391,7 @@ fn unlowered_nonblocking_assignments_preserve_scheduling() {
     let document = AstDocument::from_path(directory.join("build/ast.json")).unwrap();
     let design = Design::try_from(&document).unwrap();
     let output =
-        std::env::temp_dir().join(format!("verilator-rust-nba-test-{}", std::process::id()));
+        std::env::temp_dir().join(format!("simulator-rust-nba-test-{}", std::process::id()));
     replace_generated_project(
         &design,
         &output,
@@ -410,7 +410,7 @@ fn unlowered_nonblocking_assignments_preserve_scheduling() {
     .unwrap();
     fs::write(output.join("tests/semantics.rs"), r#"
 use generated_nba::{Inputs, Model};
-use verilator_rust_runtime::Bits;
+use simulator_rust_runtime::Bits;
 
 #[test]
 fn preserves_nonblocking_scheduling() {
@@ -460,7 +460,7 @@ fn generated_storage_boundaries_preserve_wide_state_and_nonblocking_reads() {
     };
     let widths = [1, 8, 9, 16, 17, 32, 33, 64, 65, 128, 129, 257];
     let mut smoke = String::from(
-        "use generated_storage::{Inputs, Model};\nuse verilator_rust_runtime::Bits;\n#[test]\nfn wraps_and_delays() {\nlet mut model = Model::new();\nlet mut inputs = Inputs::default();\n",
+        "use generated_storage::{Inputs, Model};\nuse simulator_rust_runtime::Bits;\n#[test]\nfn wraps_and_delays() {\nlet mut model = Model::new();\nlet mut inputs = Inputs::default();\n",
     );
     let mut checks = String::new();
     let mut ones = String::new();
@@ -717,7 +717,7 @@ fn generated_storage_boundaries_preserve_wide_state_and_nonblocking_reads() {
     smoke.push_str(
         r#"
 use generated_storage::{Header, Packet, Outputs, State};
-use verilator_rust_runtime::BitSerialize;
+use simulator_rust_runtime::BitSerialize;
 let packet = Packet {
     first: Header { flag: Bits::from_bool(true), data: Bits::from_words(&[42, 0, 1]) },
     second: Header { flag: Bits::from_bool(false), data: Bits::from_words(&[7, 0, 1]) },
@@ -740,7 +740,7 @@ assert_eq!(State::deserialize(&model.state().serialize()), *model.state());
 "#,
     );
     let output =
-        std::env::temp_dir().join(format!("verilator-rust-storage-{}", std::process::id()));
+        std::env::temp_dir().join(format!("simulator-rust-storage-{}", std::process::id()));
     replace_generated_project(
         &design,
         &output,

@@ -1,5 +1,5 @@
 [package]
-name = "verilator-utils"
+name = "formal-utils"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

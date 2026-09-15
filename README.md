@@ -14,11 +14,11 @@ verilator --cc -fno-table -fno-delayed --coverage-user --sva-preserve \
   --ast-pre-codegen build/counter.json tests/counter/tb.sv
 
 # Convert the same JSON AST to AIGER.
-cargo run -p verilator-formal -- build/counter.json \
+cargo run -p formal -- build/counter.json \
   --clock clk --reset '!reset_n' --output build/counter.aig
 
 # Generate a Rust simulator library from the same JSON AST.
-cargo run -p verilator-rust -- build/counter.json \
+cargo run -p simulator-rust -- build/counter.json \
   --clock clk --output build/generated-counter --crate-name generated-counter
 ```
 
@@ -26,21 +26,21 @@ The generated Rust project directory must be new or empty.
 
 The workspace contains the following crates:
 
-- `verilator-parser` parses and validates JSON into an owned, strongly typed
+- `parser-verilator` parses and validates JSON into an owned, strongly typed
   Rust AST. It is independent of the FSM representation.
-- `verilator-utils` provides the Boolean FSM, signed variables, three-valued
+- `formal-utils` provides the Boolean FSM, signed variables, three-valued
   simulation, and ASCII/binary AIGER I/O without third-party dependencies.
-- `verilator-formal` depends on `verilator-parser` and converts its AST into an
+- `formal` depends on `parser-verilator` and converts its AST into an
   ordered Boolean finite-state machine and AIGER. The FSM is represented by the
-  sibling `verilator-utils` crate, which provides the Boolean gate, register,
+  sibling `formal-utils` crate, which provides the Boolean gate, register,
   formal-property, ordering, and AIGER-writing APIs.
-- `verilator-rust` lowers the typed AST directly into a Rust library that uses
-  the sibling `verilator-rust-runtime` package and simulates one selected RTL
+- `simulator-rust` lowers the typed AST directly into a Rust library that uses
+  the sibling `simulator-rust-runtime` package and simulates one selected RTL
   clock edge per call.
 
 The library converts Verilator JSON in two explicit phases. It first parses and
 validates the supported synchronous subset into an owned, strongly typed Rust
-AST, then orders and bit-blasts that AST into a named `verilator-utils` FSM ready for
+AST, then orders and bit-blasts that AST into a named `formal-utils` FSM ready for
 ASCII or binary AIGER 1.9 serialization. The CLI performs the same conversion
 and prints a concise summary. The supported regression inputs are tracked in
 `tests/`.
@@ -122,7 +122,7 @@ converter's property order. The two options are mutually exclusive and require
 Model
 -----
 
-The converter produces a named wrapper around `verilator_utils::fsm::FSM` containing
+The converter produces a named wrapper around `formal_utils::fsm::FSM` containing
 the selected clock domain and ordered names for inputs, registers, outputs,
 assertions, assumptions, and covers. These names are also stored as native
 FSM labels, so its AIGER readers and writers preserve them directly.
@@ -205,7 +205,7 @@ Generate ASTs containing `case` statements with Verilator's
 `-fno-table` option. Otherwise, Verilator may replace them with unpacked
 constant lookup tables, which remain outside the supported subset.
 
-Word-level operations use the `verilator-formal` crate's `ops::FsmOps`
+Word-level operations use the `formal` crate's `ops::FsmOps`
 extension trait, including
 XOR, addition, subtraction, multiplication, signed/unsigned division,
 comparison, mux, select, shift, and rotate construction. Selections use
@@ -216,19 +216,19 @@ validation, procedural semantics, and symbol metadata.
 Library users can keep the phases separate:
 
 ```rust
-let document = verilator_parser::document::AstDocument::from_reader(reader)?;
-let clock = verilator_parser::ast::Domain::new(
+let document = parser_verilator::document::AstDocument::from_reader(reader)?;
+let clock = parser_verilator::ast::Domain::new(
     "clk",
-    verilator_parser::ast::Edge::Positive,
+    parser_verilator::ast::Edge::Positive,
 );
-let design = verilator_parser::ast::Design::try_from(&document)?;
-let model = verilator_formal::convert::NamedFsm::from_design(&design, clock, None)?;
+let design = parser_verilator::ast::Design::try_from(&document)?;
+let model = formal::convert::NamedFsm::from_design(&design, clock, None)?;
 ```
 
 For a single-step conversion, pass the same signal specifications to
 `NamedFsm::from_document`.
 
-The `verilator-parser` crate builds `ast::Design`, which owns its declarations, typed
+The `parser-verilator` crate builds `ast::Design`, which owns its declarations, typed
 expressions and statements, resolved variable/data-type IDs, parsed constants
 and ranges, clock/process information, and source provenance. The `ast` module
 contains neither JSON values nor FSM values, making it the stable boundary
@@ -246,7 +246,7 @@ Rust Simulator Generation
 Generate a standalone Rust 2024 library from the same typed AST:
 
 ```sh
-cargo run -p verilator-rust -- \
+cargo run -p simulator-rust -- \
   tests/counter/build/ast.json \
   --clock clk \
   --output /tmp/generated-counter \
@@ -259,7 +259,7 @@ Prefix the clock with `!` to select a negative edge. `--reset [!]NAME` permits
 that reset edge in the sensitivity tree but does not apply reset automatically;
 reset remains a field in the generated `Inputs` structure. The output directory
 must be new or empty. The generator calculates a relative Cargo path from the
-output project to `verilator-rust/verilator-rust-runtime`; the runtime uses
+output project to `simulator-rust/simulator-rust-runtime`; the runtime uses
 `ruint` for values wider than 128 bits.
 
 Generated libraries expose `Model`, `Inputs`, `Outputs`, `State`, and
@@ -270,7 +270,7 @@ commits pending nonblocking updates, and returns the post-edge evaluation:
 
 ```rust
 use generated_counter::{Inputs, Model};
-use verilator_rust_runtime::Bits;
+use simulator_rust_runtime::Bits;
 
 let mut model = Model::new();
 let reset = Inputs {
@@ -307,7 +307,7 @@ all enum bit patterns. Arrays expose typed element accessors; unions retain shar
 packed storage with typed accessors so overlapping members stay consistent.
 
 ```rust
-use verilator_rust_runtime::{BitSerialize, Bits};
+use simulator_rust_runtime::{BitSerialize, Bits};
 
 let mut record = generated_data_types::RecordT::default();
 record.flags = Bits::from_u8(12);
@@ -329,7 +329,7 @@ AIGER Export
 ------------
 
 Before the CLI writes, covers are removed, gate outputs are normalized, and
-ordering is verified. `verilator-utils` then writes ASCII or binary AIGER 1.9 syntax.
+ordering is verified. `formal-utils` then writes ASCII or binary AIGER 1.9 syntax.
 With `--zero-init`, every latch reset value is set to zero before serialization.
 Design outputs, assertions as bad-state properties, and assumptions as
 constraints are retained, with AIGER symbols emitted from the FSM labels.

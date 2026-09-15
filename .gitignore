@@ -1,4 +1,4 @@
 /target/
-/verilator-rust/build/
+/simulator-rust/build/
 /tests/*/build/
 /tests/*/build-release/
