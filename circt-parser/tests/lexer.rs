@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::Path};
 
 use parser_circt::lexer::{
     Lexer,
@@ -267,73 +267,113 @@ fn tokens_outlive_the_source() {
     assert_eq!(token.to_string(), "comb.add");
 }
 
-/// Generate the MLIR fixtures with `./test-circt.sh`, then run the lexer test:
-/// `cargo test -p parser-circt --test lexer lexer_round_trips_every_mlir_fixture -- --nocapture`
-#[test]
-fn lexer_round_trips_every_mlir_fixture() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests");
-    let mut directories = vec![root.clone()];
-    let mut paths = Vec::new();
-    // Include hidden and gitignored build directories; do not follow directory
-    // symlinks, which may escape the corpus or introduce cycles.
-    while let Some(directory) = directories.pop() {
-        for entry in fs::read_dir(&directory)
-            .unwrap_or_else(|error| panic!("{}: {error}", directory.display()))
-        {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if entry.file_type().unwrap().is_dir() {
-                directories.push(path);
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension == "mlir")
-                && path.is_file()
-            {
-                paths.push(path);
-            }
+fn lexer_round_trips_mlir(path: impl AsRef<Path>) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+    let file_id = 7;
+    let source =
+        fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let mut reconstructed = Vec::with_capacity(source.len());
+    let mut syntax_tokens = 0;
+    for token in Lexer::new(file_id, &source) {
+        let token = token.unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(token.position.index, reconstructed.len());
+        assert_eq!(token.position.file_id, file_id);
+        assert_eq!(token.position.length, token.text.len());
+        assert!(!token.text.is_empty());
+        reconstructed.extend_from_slice(&token.text);
+        if !token.kind.is_whitespace() {
+            syntax_tokens += 1;
         }
     }
-    paths.sort();
     assert!(
-        !paths.is_empty(),
-        "no .mlir fixtures found under {}; run ./test-circt.sh to generate them",
-        root.display()
+        reconstructed == source.as_bytes(),
+        "{}: round trip mismatch",
+        path.display()
     );
-    let mut total_tokens = 0;
-    let mut total_bytes = 0;
-    for (file_id, path) in (&paths).into_iter().enumerate() {
-        let source =
-            fs::read_to_string(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        let mut reconstructed = Vec::with_capacity(source.len());
-        let mut syntax_tokens = 0;
-        for token in Lexer::new(file_id, &source) {
-            let token = token.unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            assert_eq!(token.position.index, reconstructed.len());
-            assert_eq!(token.position.file_id, file_id);
-            assert_eq!(token.position.length, token.text.len());
-            assert!(!token.text.is_empty());
-            reconstructed.extend_from_slice(&token.text);
-            if !token.kind.is_whitespace() {
-                syntax_tokens += 1;
-            }
-            total_tokens += 1;
-        }
-        assert!(
-            reconstructed == source.as_bytes(),
-            "{}: round trip mismatch",
-            path.display()
-        );
-        let mut lexer = Lexer::new(file_id, &source);
-        let mut actual_syntax_tokens = 0;
-        while lexer.next_syntax().unwrap().is_some() {
-            actual_syntax_tokens += 1;
-        }
-        assert_eq!(actual_syntax_tokens, syntax_tokens, "{}", path.display());
-        total_bytes += source.len();
-        println!("{}: {} bytes", path.display(), source.len());
+    let mut lexer = Lexer::new(file_id, &source);
+    let mut actual_syntax_tokens = 0;
+    while lexer.next_syntax().unwrap().is_some() {
+        actual_syntax_tokens += 1;
     }
-    println!(
-        "Lexed {} MLIR files: {total_bytes} bytes, {total_tokens} tokens; all round trips exact",
-        paths.len()
-    );
+    assert_eq!(actual_syntax_tokens, syntax_tokens, "{}", path.display());
+}
+
+#[test]
+fn fixture_case_statements() {
+    lexer_round_trips_mlir("res/case_statements.hw.mlir");
+}
+
+#[test]
+fn fixture_combinational_loops() {
+    lexer_round_trips_mlir("res/combinational_loops.hw.mlir");
+}
+
+#[test]
+fn fixture_counter() {
+    lexer_round_trips_mlir("res/counter.hw.mlir");
+}
+
+#[test]
+fn fixture_counter_free() {
+    lexer_round_trips_mlir("res/counter_free.hw.mlir");
+}
+
+#[test]
+fn fixture_counter_ones() {
+    lexer_round_trips_mlir("res/counter_ones.hw.mlir");
+}
+
+#[test]
+fn fixture_fifo_stage() {
+    lexer_round_trips_mlir("res/fifo_stage.hw.mlir");
+}
+
+#[test]
+fn fixture_fifo_stage_bypass() {
+    lexer_round_trips_mlir("res/fifo_stage_bypass.hw.mlir");
+}
+
+#[test]
+fn fixture_fifo_stage_fail_assert() {
+    lexer_round_trips_mlir("res/fifo_stage_fail_assert.hw.mlir");
+}
+
+#[test]
+fn fixture_fifo_stage_fail_free() {
+    lexer_round_trips_mlir("res/fifo_stage_fail_free.hw.mlir");
+}
+
+#[test]
+fn fixture_multidim_arrays() {
+    lexer_round_trips_mlir("res/multidim_arrays.hw.mlir");
+}
+
+#[test]
+fn fixture_package_properties() {
+    lexer_round_trips_mlir("res/package_properties.hw.mlir");
+}
+
+#[test]
+fn fixture_packet_switch() {
+    lexer_round_trips_mlir("res/packet_switch.hw.mlir");
+}
+
+#[test]
+fn fixture_public_submodules() {
+    lexer_round_trips_mlir("res/public_submodules.hw.mlir");
+}
+
+#[test]
+fn fixture_signed_operations() {
+    lexer_round_trips_mlir("res/signed_operations.hw.mlir");
+}
+
+#[test]
+fn fixture_stream_stage() {
+    lexer_round_trips_mlir("res/stream_stage.hw.mlir");
+}
+
+#[test]
+fn fixture_wire_ports() {
+    lexer_round_trips_mlir("res/wire_ports.hw.mlir");
 }

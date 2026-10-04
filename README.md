@@ -57,24 +57,30 @@ and prints a concise summary. The supported regression inputs are tracked in
 Target Workflow
 ---------------
 
-Run `./test-circt.sh` to generate the CIRCT fixtures, then
-`cargo test -p parser-circt` to run the lexer and parser tests. The fixture tests
-lex and round-trip every `.mlir` file and parse every `opt-formal-core.mlir` file
-under this repository's `tests/` directory, including ignored build directories.
-To run just the fixture tests with per-file output:
+Run `cargo test -p parser-circt` to run the lexer and parser tests. Both
+suites have an explicit test for each checked-in `circt-parser/res/<fixture_name>.hw.mlir`
+fixture and pass its path to a shared helper within the suite. The fixtures are
+copies of the generated `opt-formal-core.mlir` files from
+`tests/circt-results/build/<fixture_name>/`; running the tests does not require
+CIRCT or generated build directories. To refresh a fixture, generate it with
+`./test-circt.sh` and copy its `opt-formal-core.mlir` file into `circt-parser/res/`
+using the fixture's `.hw.mlir` name. Add an explicit test in both suites when
+adding a fixture.
+
+To run just the fixture tests:
 
 ```sh
-cargo test -p parser-circt --test lexer lexer_round_trips_every_mlir_fixture -- --nocapture
-cargo test -p parser-circt --test parser parses_every_generated_formal_core_fixture -- --nocapture
+cargo test -p parser-circt --test lexer fixture_
+cargo test -p parser-circt --test parser fixture_
 ```
 
-Both fixture tests run by default and report how to generate the files if none
-are present. The parser fixture test checks module and operation counts and output
-ports, then writes each AST to tokens, checks equal token counts, and compares
-each token's kind and text against the input, ignoring positions. It also
-reparses and rewrites the emitted tokens to verify the round trip. The writer
-normalizes formatting; comments and whitespace outside retained literal and
-location spellings are not part of the AST.
+The lexer fixture helper verifies lossless tokenization and source positions.
+The parser fixture helper checks module and operation counts and output ports,
+then writes the AST to tokens, checks equal token counts, and compares each
+token's kind and text against the input, ignoring positions. It also reparses
+and rewrites the emitted tokens to verify the round trip. The writer normalizes
+formatting; comments and whitespace outside retained literal and location
+spellings are not part of the AST.
 
 The parser supports `module`/`builtin.module`, `hw.module`, `hw.module.extern`,
 `hw.constant`, `hw.instance`, `hw.output`, `hw.array_get`, and `hw.array_inject`.

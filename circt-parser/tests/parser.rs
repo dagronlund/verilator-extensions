@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::Path};
 
 use bytes::Bytes;
 use parser_circt::{
@@ -467,116 +467,157 @@ fn errors_report_token_and_eof_positions() {
     assert_eq!(error.position.column, 10);
 }
 
-#[test]
-fn parses_every_generated_formal_core_fixture() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests");
-    let mut directories = vec![root.clone()];
-    let mut paths = Vec::new();
-    // Include gitignored build directories without following directory symlinks.
-    while let Some(directory) = directories.pop() {
-        for entry in fs::read_dir(&directory).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if entry.file_type().unwrap().is_dir() {
-                directories.push(path);
-            } else if path
-                .file_name()
-                .is_some_and(|name| name == "opt-formal-core.mlir")
-                && path.is_file()
-            {
-                paths.push(path);
-            }
-        }
-    }
-    paths.sort();
-    assert!(
-        !paths.is_empty(),
-        "no opt-formal-core.mlir files under {}; run ./test-circt.sh to generate them",
-        root.display()
-    );
-    let mut total_modules = 0;
-    let mut total_operations = 0;
-    for (file_id, path) in (&paths).into_iter().enumerate() {
-        let source = fs::read_to_string(path).unwrap();
-        let file =
-            parse(file_id, &source).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        assert_round_trip(&file, file_id);
-        let mut modules = Vec::new();
-        collect_modules(&file.items, &mut modules);
-        assert!(!modules.is_empty(), "{}: empty AST", path.display());
-        let mut operations = 0;
-        for module in &modules {
-            assert_eq!(module.position.file_id, file_id);
-            assert!(source[module.position.range()].starts_with("hw.module"));
-            let body = module.body.as_ref().expect("defined HW module");
-            operations += body.len();
-            let outputs = (&module.ports)
-                .into_iter()
-                .filter(|port| port.direction == PortDirection::Output)
-                .count();
-            let OperationKind::Output { values, .. } =
-                &body.last().expect("HW output terminator").kind
-            else {
-                panic!("{}: missing hw.output", path.display())
-            };
-            assert_eq!(
-                values.len(),
-                outputs,
-                "{}: {} output ports",
-                path.display(),
-                String::from_utf8_lossy(&module.name.spelling)
-            );
-            for operation in body {
-                assert_eq!(operation.position.file_id, file_id);
-                assert!(source.get(operation.position.range()).is_some());
-                for result in &operation.results {
-                    assert_eq!(
-                        source[result.name.position.range()].as_bytes(),
-                        result.name.spelling.as_ref()
-                    );
-                }
-            }
-        }
-        // Independently count operation names in the lexer stream: parsing must
-        // retain every operation, rather than just accepting/skipping the file.
-        let mut expected_modules = 0;
-        let mut expected_operations = 0;
-        let original_tokens = Lexer::new(file_id, &source)
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
+fn parser_round_trips_mlir(path: impl AsRef<Path>) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+    let file_id = 7;
+    let source =
+        fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let file =
+        parse(file_id, &source).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    assert_round_trip(&file, file_id);
+    let mut modules = Vec::new();
+    collect_modules(&file.items, &mut modules);
+    assert!(!modules.is_empty(), "{}: empty AST", path.display());
+    let mut operations = 0;
+    for module in &modules {
+        assert_eq!(module.position.file_id, file_id);
+        assert!(source[module.position.range()].starts_with("hw.module"));
+        let body = module.body.as_ref().expect("defined HW module");
+        operations += body.len();
+        let outputs = (&module.ports)
             .into_iter()
-            .filter(|token| !token.kind.is_whitespace())
-            .collect::<Vec<_>>();
-        assert_tokens_equal(&original_tokens, &file.to_vec(file_id).unwrap());
-        for token in &original_tokens {
-            if token.kind != LexerTokenKind::Identifier {
-                continue;
-            }
-            let name = String::from_utf8_lossy(&token.text);
-            if name == "hw.module" {
-                expected_modules += 1;
-            } else if name.starts_with("hw.")
-                || name.starts_with("comb.")
-                || name.starts_with("seq.")
-                || name.starts_with("verif.")
-            {
-                expected_operations += 1;
+            .filter(|port| port.direction == PortDirection::Output)
+            .count();
+        let OperationKind::Output { values, .. } = &body.last().expect("HW output terminator").kind
+        else {
+            panic!("{}: missing hw.output", path.display())
+        };
+        assert_eq!(
+            values.len(),
+            outputs,
+            "{}: {} output ports",
+            path.display(),
+            String::from_utf8_lossy(&module.name.spelling)
+        );
+        for operation in body {
+            assert_eq!(operation.position.file_id, file_id);
+            assert!(source.get(operation.position.range()).is_some());
+            for result in &operation.results {
+                assert_eq!(
+                    source[result.name.position.range()].as_bytes(),
+                    result.name.spelling.as_ref()
+                );
             }
         }
-        assert_eq!(modules.len(), expected_modules, "{}", path.display());
-        assert_eq!(operations, expected_operations, "{}", path.display());
-        total_modules += modules.len();
-        total_operations += operations;
-        println!(
-            "{}: {} modules, {operations} operations; token round trip verified",
-            path.display(),
-            modules.len()
-        );
     }
-    println!(
-        "Round-tripped {} formal-core fixtures: {total_modules} HW modules, {total_operations} operations",
-        paths.len()
-    );
+    // Independently count operation names in the lexer stream: parsing must
+    // retain every operation, rather than just accepting/skipping the file.
+    let mut expected_modules = 0;
+    let mut expected_operations = 0;
+    let original_tokens = Lexer::new(file_id, &source)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .into_iter()
+        .filter(|token| !token.kind.is_whitespace())
+        .collect::<Vec<_>>();
+    assert_tokens_equal(&original_tokens, &file.to_vec(file_id).unwrap());
+    for token in &original_tokens {
+        if token.kind != LexerTokenKind::Identifier {
+            continue;
+        }
+        let name = String::from_utf8_lossy(&token.text);
+        if name == "hw.module" {
+            expected_modules += 1;
+        } else if name.starts_with("hw.")
+            || name.starts_with("comb.")
+            || name.starts_with("seq.")
+            || name.starts_with("verif.")
+        {
+            expected_operations += 1;
+        }
+    }
+    assert_eq!(modules.len(), expected_modules, "{}", path.display());
+    assert_eq!(operations, expected_operations, "{}", path.display());
+}
+
+#[test]
+fn fixture_case_statements() {
+    parser_round_trips_mlir("res/case_statements.hw.mlir");
+}
+
+#[test]
+fn fixture_combinational_loops() {
+    parser_round_trips_mlir("res/combinational_loops.hw.mlir");
+}
+
+#[test]
+fn fixture_counter() {
+    parser_round_trips_mlir("res/counter.hw.mlir");
+}
+
+#[test]
+fn fixture_counter_free() {
+    parser_round_trips_mlir("res/counter_free.hw.mlir");
+}
+
+#[test]
+fn fixture_counter_ones() {
+    parser_round_trips_mlir("res/counter_ones.hw.mlir");
+}
+
+#[test]
+fn fixture_fifo_stage() {
+    parser_round_trips_mlir("res/fifo_stage.hw.mlir");
+}
+
+#[test]
+fn fixture_fifo_stage_bypass() {
+    parser_round_trips_mlir("res/fifo_stage_bypass.hw.mlir");
+}
+
+#[test]
+fn fixture_fifo_stage_fail_assert() {
+    parser_round_trips_mlir("res/fifo_stage_fail_assert.hw.mlir");
+}
+
+#[test]
+fn fixture_fifo_stage_fail_free() {
+    parser_round_trips_mlir("res/fifo_stage_fail_free.hw.mlir");
+}
+
+#[test]
+fn fixture_multidim_arrays() {
+    parser_round_trips_mlir("res/multidim_arrays.hw.mlir");
+}
+
+#[test]
+fn fixture_package_properties() {
+    parser_round_trips_mlir("res/package_properties.hw.mlir");
+}
+
+#[test]
+fn fixture_packet_switch() {
+    parser_round_trips_mlir("res/packet_switch.hw.mlir");
+}
+
+#[test]
+fn fixture_public_submodules() {
+    parser_round_trips_mlir("res/public_submodules.hw.mlir");
+}
+
+#[test]
+fn fixture_signed_operations() {
+    parser_round_trips_mlir("res/signed_operations.hw.mlir");
+}
+
+#[test]
+fn fixture_stream_stage() {
+    parser_round_trips_mlir("res/stream_stage.hw.mlir");
+}
+
+#[test]
+fn fixture_wire_ports() {
+    parser_round_trips_mlir("res/wire_ports.hw.mlir");
 }
 
 fn collect_modules<'a>(items: &'a [Item], modules: &mut Vec<&'a HwModule>) {

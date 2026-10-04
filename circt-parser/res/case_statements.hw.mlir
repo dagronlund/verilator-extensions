@@ -1,0 +1,105 @@
+module {
+  hw.module @case_statements(in %clk : i1, in %reset_n : i1, in %selector : i3, in %data : i4, out decoded : i4, out combinational_decoded : i4, out wildcard_decoded : i4) {
+    %true = hw.constant true
+    %c-7_i4 = hw.constant -7 : i4
+    %c-8_i4 = hw.constant -8 : i4
+    %c0_i4 = hw.constant 0 : i4
+    %c-1_i4 = hw.constant -1 : i4
+    %c1_i4 = hw.constant 1 : i4
+    %c7_i4 = hw.constant 7 : i4
+    %c6_i4 = hw.constant 6 : i4
+    %c5_i4 = hw.constant 5 : i4
+    %c-2_i2 = hw.constant -2 : i2
+    %c1_i2 = hw.constant 1 : i2
+    %c4_i4 = hw.constant 4 : i4
+    %c0_i2 = hw.constant 0 : i2
+    %c2_i3 = hw.constant 2 : i3
+    %c3_i4 = hw.constant 3 : i4
+    %c1_i3 = hw.constant 1 : i3
+    %c-6_i4 = hw.constant -6 : i4
+    %c-4_i3 = hw.constant -4 : i3
+    %c0_i3 = hw.constant 0 : i3
+    %0 = comb.icmp bin eq %selector, %c0_i3 : i3
+    %1 = comb.icmp bin eq %selector, %c-4_i3 : i3
+    %2 = comb.xor bin %data, %c-6_i4 : i4
+    %3 = comb.icmp bin eq %selector, %c1_i3 : i3
+    %4 = comb.add bin %data, %c3_i4 : i4
+    %5 = comb.icmp bin eq %selector, %c2_i3 : i3
+    %6 = comb.extract %data from 0 : (i4) -> i2
+    %7 = comb.icmp bin eq %6, %c0_i2 : i2
+    %8 = comb.icmp bin eq %6, %c1_i2 : i2
+    %9 = comb.icmp bin eq %6, %c-2_i2 : i2
+    %10 = comb.xor bin %0, %true : i1
+    %11 = comb.xor bin %1, %true : i1
+    %12 = comb.and bin %11, %10 : i1
+    %13 = comb.xor bin %3, %true : i1
+    %14 = comb.and bin %13, %12 : i1
+    %15 = comb.and bin %5, %14 : i1
+    %16 = comb.xor bin %7, %true : i1
+    %17 = comb.and bin %16, %15, %8 : i1
+    %18 = comb.or bin %17, %9 : i1
+    %19 = comb.mux bin %18, %c5_i4, %c6_i4 : i4
+    %20 = comb.and bin %15, %7 : i1
+    %21 = comb.mux bin %20, %c4_i4, %19 : i4
+    %22 = comb.xor bin %5, %true : i1
+    %23 = comb.and bin %14, %22 : i1
+    %24 = comb.mux bin %23, %c7_i4, %21 : i4
+    %25 = comb.and bin %3, %12 : i1
+    %26 = comb.mux bin %25, %4, %24 : i4
+    %27 = comb.and bin %1, %10 : i1
+    %28 = comb.or bin %27, %0 : i1
+    %29 = comb.mux bin %28, %2, %26 : i4
+    %30 = comb.extract %selector from 2 : (i3) -> i1
+    %31 = comb.extract %selector from 1 : (i3) -> i2
+    %32 = comb.icmp bin eq %31, %c1_i2 : i2
+    %33 = comb.add bin %data, %c1_i4 : i4
+    %34 = comb.xor bin %data, %c-1_i4 : i4
+    %35 = comb.xor bin %30, %true : i1
+    %36 = comb.xor bin %32, %true : i1
+    %37 = comb.and bin %36, %35 : i1
+    %38 = comb.and bin %37, %13 : i1
+    %39 = comb.mux bin %38, %c0_i4, %data : i4
+    %40 = comb.and bin %3, %37 : i1
+    %41 = comb.mux bin %40, %34, %39 : i4
+    %42 = comb.and bin %32, %35 : i1
+    %43 = comb.mux bin %42, %33, %41 : i4
+    %44 = comb.mux bin %9, %c-7_i4, %c-6_i4 : i4
+    %45 = comb.icmp bin ne %selector, %c0_i3 : i3
+    %46 = comb.and bin %11, %45 : i1
+    %47 = comb.and bin %13, %46 : i1
+    %48 = comb.and bin %5, %47 : i1
+    %49 = comb.and bin %16, %48 : i1
+    %50 = comb.xor bin %8, %true : i1
+    %51 = comb.and bin %50, %49 : i1
+    %52 = comb.mux bin %51, %44, %data : i4
+    %53 = comb.and bin %49, %8 : i1
+    %54 = comb.mux bin %53, %c-7_i4, %52 : i4
+    %55 = comb.and bin %48, %7 : i1
+    %56 = comb.mux bin %55, %c-8_i4, %54 : i4
+    %57 = comb.and bin %47, %22 : i1
+    %58 = comb.mux bin %57, %c-1_i4, %56 : i4
+    %59 = comb.and bin %45, %1 : i1
+    %60 = comb.mux bin %59, %data, %58 : i4
+    %61 = comb.and bin %3, %46 : i1
+    %62 = comb.mux bin %61, %33, %60 : i4
+    %63 = seq.to_clock %clk
+    %decoded = seq.firreg %62 clock %63 : i4
+    %64 = seq.compreg %data, %63 : i4  
+    %65 = comb.icmp eq %selector, %c0_i3 : i3
+    %66 = comb.icmp eq %decoded, %64 : i4
+    %67 = seq.firreg %65 clock %63 preset 0 : i1
+    verif.clocked_assert %66 if %67, posedge %clk : i1
+    %68 = comb.extract %selector from 1 : (i3) -> i1
+    %69 = comb.extract %selector from 0 : (i3) -> i1
+    %70 = comb.mux bin %69, %34, %c0_i4 : i4
+    %71 = comb.mux bin %68, %33, %70 : i4
+    %72 = comb.mux bin %30, %data, %71 : i4
+    %73 = comb.icmp eq %43, %72 : i4
+    verif.clocked_assert %73, posedge %clk : i1
+    %circt_past_valid = seq.firreg %true clock %63 preset 0 : i1
+    %74 = comb.icmp eq %reset_n, %circt_past_valid : i1
+    verif.clocked_assume %74, posedge %clk : i1
+    hw.output %decoded, %29, %43 : i4, i4, i4
+  }
+}
+
