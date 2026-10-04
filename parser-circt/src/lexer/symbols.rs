@@ -1,4 +1,4 @@
-use crate::lexer::LexerErrorKind;
+use crate::lexer::error::LexerErrorKind;
 
 /// Symbols shared by MLIR dialects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

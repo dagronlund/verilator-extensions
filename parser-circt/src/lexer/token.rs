@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use logos::Logos;
 
-use crate::lexer::{LexerErrorKind, position::LexerPosition, symbols::LexerSymbol};
+use crate::lexer::{error::LexerErrorKind, position::LexerPosition, symbols::LexerSymbol};
 
 /// MLIR token categories. Keywords and builtin type names remain identifiers;
 /// the parser interprets their spelling in context.

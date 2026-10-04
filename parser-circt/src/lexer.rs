@@ -10,9 +10,10 @@
 //! let token = lexer.next_syntax()?.unwrap();
 //! assert_eq!(token.kind, LexerTokenKind::ValueIdentifier);
 //! assert_eq!(token.text.as_ref(), b"%sum");
-//! # Ok::<(), parser_circt::lexer::LexerError>(())
+//! # Ok::<(), parser_circt::lexer::error::LexerError>(())
 //! ```
 
+pub mod error;
 pub mod position;
 pub mod symbols;
 pub mod token;
@@ -23,26 +24,10 @@ use bytes::Bytes;
 use logos::Logos;
 
 use crate::lexer::{
+    error::{LexerError, LexerResult},
     position::LexerPosition,
     token::{LexerToken, LexerTokenKind},
 };
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, thiserror::Error)]
-pub enum LexerErrorKind {
-    #[default]
-    #[error("unexpected character or malformed token")]
-    UnexpectedCharacter,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("{kind} at {position}")]
-pub struct LexerError {
-    pub kind: LexerErrorKind,
-    /// For a malformed string, the span starts at the opening quote (or `@`).
-    pub position: LexerPosition,
-}
-
-pub type LexerResult<T> = Result<T, LexerError>;
 
 /// An iterator of positioned tokens. Stops after its first error.
 pub struct Lexer<'a> {

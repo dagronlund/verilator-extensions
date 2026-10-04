@@ -26,10 +26,15 @@ The generated Rust project directory must be new or empty.
 
 The workspace contains the following crates:
 
-- `parser-circt` provides a shared, lossless lexer for CIRCT's MLIR assembly.
+- `parser-circt` provides a shared, lossless lexer and a recursive-descent parser
+  for CIRCT's HW/formal-core MLIR assembly.
   It uses Logos and shared `Bytes` slices, preserves literal spellings and
   trivia, and reports file IDs, byte spans, lines, and columns. Keywords remain
-  identifiers for a future parser to interpret in context.
+  identifiers for the parser to interpret in context. The parser produces an
+  owned, typed AST in `src/ast.rs`, retaining source spans, literal spellings,
+  attributes, and location annotations. Nodes implement the `ParserNode` trait
+  and share token/group helpers in `src/parser.rs`. The AST writer in
+  `src/writer.rs` emits canonical assembly and positioned lexer tokens.
 - `parser-verilator` parses and validates JSON into an owned, strongly typed
   Rust AST. It is independent of the FSM representation.
 - `formal-utils` provides the Boolean FSM, signed variables, three-valued
@@ -53,16 +58,43 @@ Target Workflow
 ---------------
 
 Run `./test-circt.sh` to generate the CIRCT fixtures, then
-`cargo test -p parser-circt` to run the lexer tests and lex and round-trip every
-`.mlir` file under this repository's `tests/` directory, including ignored
-build directories. To run just the lexer fixture test with per-file output:
+`cargo test -p parser-circt` to run the lexer and parser tests. The fixture tests
+lex and round-trip every `.mlir` file and parse every `opt-formal-core.mlir` file
+under this repository's `tests/` directory, including ignored build directories.
+To run just the fixture tests with per-file output:
 
 ```sh
-cargo test -p parser-circt --test lexer_fixtures -- --nocapture
+cargo test -p parser-circt --test lexer lexer_round_trips_every_mlir_fixture -- --nocapture
+cargo test -p parser-circt --test parser parses_every_generated_formal_core_fixture -- --nocapture
 ```
 
-The lexer fixture test runs by default and reports how to generate the files if none
-are present.
+Both fixture tests run by default and report how to generate the files if none
+are present. The parser fixture test checks module and operation counts and output
+ports, then writes each AST to tokens, checks equal token counts, and compares
+each token's kind and text against the input, ignoring positions. It also
+reparses and rewrites the emitted tokens to verify the round trip. The writer
+normalizes formatting; comments and whitespace outside retained literal and
+location spellings are not part of the AST.
+
+The parser supports `module`/`builtin.module`, `hw.module`, `hw.module.extern`,
+`hw.constant`, `hw.instance`, `hw.output`, `hw.array_get`, and `hw.array_inject`.
+It also handles the formal-core fixtures' comb arithmetic, logic, comparisons,
+muxes, concatenations and extracts; `seq.to_clock`, `seq.firreg`, and
+`seq.compreg`; and clocked verif assertions, assumptions, and covers. Types
+include integers, nested HW arrays and structs, inouts, clocks, and type-alias
+references. Generic operation assembly, parameterized module declarations,
+type declarations, and other dialect operations are currently unsupported and
+produce positioned errors. SSA names are retained, including forward references,
+without resolving or verifying the design.
+
+```rust
+let file = parser_circt::parser::parse(0, &std::fs::read_to_string(path)?)?;
+let written = parser_circt::writer::write(1, &file)?;
+let tokens = written.tokens();
+let reparsed = parser_circt::parser::Parser::from_tokens(
+    1, written.source(), tokens.to_vec(),
+)?.parse()?;
+```
 
 Run `./test.sh` to remove each fixture's `build/` directory, rebuild every
 Verilator fixture, and run all Cargo workspace tests. Additional arguments are
