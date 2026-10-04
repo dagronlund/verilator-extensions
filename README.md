@@ -38,7 +38,10 @@ The workspace contains the following crates:
 - `parser-verilator` parses and validates JSON into an owned, strongly typed
   Rust AST. It is independent of the FSM representation.
 - `formal-utils` provides the Boolean FSM, signed variables, three-valued
-  simulation, and ASCII/binary AIGER I/O without third-party dependencies.
+  simulation, shared bit-vector operation builders, and ASCII/binary AIGER I/O
+  without third-party dependencies.
+- `circt-formal` resolves and flattens the `parser-circt` AST, then converts
+  binary HW/formal-core operations to the shared FSM and AIGER.
 - `formal` depends on `parser-verilator` and converts its AST into an
   ordered Boolean finite-state machine and AIGER. The FSM is represented by the
   sibling `formal-utils` crate, which provides the Boolean gate, register,
@@ -259,12 +262,12 @@ Generate ASTs containing `case` statements with Verilator's
 `-fno-table` option. Otherwise, Verilator may replace them with unpacked
 constant lookup tables, which remain outside the supported subset.
 
-Word-level operations use the `formal` crate's `ops::FsmOps`
+Word-level operations use the `formal-utils` crate's `ops::FsmOps`
 extension trait, including
 XOR, addition, subtraction, multiplication, signed/unsigned division,
 comparison, mux, select, shift, and rotate construction. Selections use
-LSB-first vector slices, with dynamic offsets lowered to muxes. This crate
-remains responsible for Verilator AST dispatch, operand sizing, signedness
+LSB-first vector slices, with dynamic offsets lowered to muxes. The Verilator
+backend remains responsible for Verilator AST dispatch, operand sizing, signedness
 validation, procedural semantics, and symbol metadata.
 
 Library users can keep the phases separate:
@@ -293,6 +296,119 @@ emit an equivalent supported JSON tree.
 For compatibility, `convert::NamedFsm::try_from(&document)` still performs both
 phases in one call when the parsed design has exactly one sensitivity domain.
 the AIGER writers serialize the resulting ordered FSM.
+
+CIRCT Formal Conversion
+-----------------------
+
+Convert the checked-in HW/formal-core MLIR fixtures directly, without requiring
+CIRCT to be installed:
+
+```sh
+mkdir -p build
+cargo run -p circt-formal -- circt-parser/res/counter.hw.mlir \
+  --clock clk --reset '!reset_n' --output build/counter-circt.aig
+
+cargo run -p circt-formal -- circt-parser/res/public_submodules.hw.mlir \
+  --clock clk --reset '!reset_n'
+```
+
+The CLI always converts and prints a summary; `--output` is optional. The parent
+output directory must already exist. `.aag` selects ASCII and `.aig` binary
+AIGER 1.9. Use `--top NAME` (or a `namespace::NAME`) when there is no unique public,
+defined, uninstantiated module. `--clock [!]NAME` is required; `!` selects the
+negative edge. All reachable registers and clocked properties must use that
+same edge, allowing clock forwarding and simple inversion through hierarchy.
+Clock inputs are removed from the model, and clocks cannot be read as data.
+
+To generate fresh input, use the `circt-verilog --ir-hw` frontend followed by
+`circt-opt --comb-assume-two-valued` and then
+`circt-opt --lower-llhd-formal-to-core`, as in `./test-circt.sh`. Disable memory
+inference with `--detect-memories=false` to retain register arrays. The converter
+accepts the parser's binary formal-core subset, including forward SSA references,
+grouped instance results, nested instances, fixed-width integers, arrays, packed
+struct passthrough, arithmetic/comparisons, dynamic array reads and injection,
+`seq.firreg`, `seq.compreg`, and clocked assertions, assumptions, and covers.
+CIRCT has already lowered procedural and temporal semantics into this graph.
+
+Bits are LSB-first, array element zero is the least-significant slice, and the
+first declared struct field/concatenation operand is most significant. Arithmetic
+uses explicit widths and operation signedness, without implicit resizing.
+The model uses binary logic even for operations without `bin`; case/wildcard
+comparisons reduce to ordinary equality. X/Z semantics are outside this subset.
+
+Register presets initialize their bits; other state starts unknown. Asynchronous
+resets are automatically sampled as synchronous resets. A conversion warning
+lists the affected registers and states that between-edge reset events are
+ignored. Library calls return these warnings instead of writing to stderr.
+
+`--reset [!]NAME` is optional and follows the Verilator shortcut: simulate one
+transition with reset asserted and other inputs unknown, infer known initial
+state (falling back to presets for unknown results), then remove the reset input
+by tying it inactive. This also advances CIRCT's history and validity registers.
+IR assumptions are retained. Omitting the flag preserves reset inputs and
+first-cycle reset assumptions. `--zero-init` instead forces exported latch
+initialization to zero and does not change the library model.
+
+Assert/assume expressions mean `!enable || property`; covers mean
+`enable && property`, evaluated before each transition. Labels are retained when
+present, with instance-qualified ordinal names as fallbacks. Properties in a
+child instance appear at that instance's declaration position. Register names
+are qualified by instance, and collisions receive stable suffixes.
+
+Division/remainder by zero and out-of-bounds array accesses produce synthetic
+`$undefined::...` inputs. Each operation shares its result across uses within a
+transition. These values can vary between transitions, conservatively relaxing
+CIRCT's repeated-operand correlation and potentially producing spurious
+counterexamples. Undefined array injection makes the entire result unconstrained.
+
+Export also supports `--strip-symbols`, `--debug`, `--assertion INDEX` (alias
+`--assert`), and `--cover INDEX`. Property indices are zero-based; selections
+require output and are mutually exclusive. Cover selection negates that cover
+as an assertion. Assumptions remain, and covers otherwise have no AIGER section.
+Export normalizes a copy, preserving the library model's named references.
+Backslashes and line-breaking/control characters are escaped in AIGER symbols.
+RON export is not provided.
+
+```rust
+use circt_formal::convert::{ConversionOptions, NamedFsm};
+
+let options = ConversionOptions {
+    top: None,
+    clock: "clk".parse()?,
+    reset: Some("!reset_n".parse()?),
+};
+let file = parser_circt::parser::parse(0, &source)?;
+let model = NamedFsm::from_ast(&file, &options)?;
+// Alternatively: NamedFsm::from_source(0, &source, &options)?;
+```
+
+Malformed graphs report source spans and instance paths. Unsupported boundaries
+include zero-width data, unresolved type aliases, inouts, instantiated external
+modules, recursive hierarchy, combinational cycles, multiple clock domains,
+clock gating, and operations not recognized by `parser-circt`.
+
+`FsmOps`, `Comparison`, and `ShiftOperation` now live in `formal_utils::ops`;
+clients importing the former `formal::ops` path must update their imports.
+
+Run the self-contained conversion and utility tests with:
+
+```sh
+cargo test -p circt-formal -p formal-utils
+```
+
+Solver integration tests are explicitly enabled and require `ric3`, `circt-bmc`,
+Z3, and Ninja/a supported Verilator for the cross-backend comparison. They check
+safe assertions, cover reachability, a failing FIFO assertion,
+replay CIRCT's counterexample trace against the FSM, and compare counter traces
+with Verilator after reset:
+
+```sh
+CIRCT_BMC_SHARED_LIBS=/path/to/libz3.dylib \
+  cargo test -p circt-formal --test formal_checks -- --ignored
+```
+
+CIRCT and Verilator may lower the same RTL differently; fixture property counts,
+names, and verdicts are checked against their respective frontend outputs.
 
 Rust Simulator Generation
 -------------------------

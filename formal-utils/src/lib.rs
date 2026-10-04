@@ -3,6 +3,7 @@
 pub mod formats;
 pub mod fsm;
 pub mod gate;
+pub mod ops;
 pub mod option_bit_vec;
 pub mod sim;
 pub mod value;

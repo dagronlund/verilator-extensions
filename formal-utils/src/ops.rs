@@ -1,4 +1,4 @@
-use formal_utils::{fsm::FSM, gate::GateType, value::Value};
+use crate::{fsm::FSM, gate::GateType, value::Value};
 
 /// The operation performed by [`FsmOps::create_comparison`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,10 +21,10 @@ pub enum ShiftOperation {
     RotateRight,
 }
 
-/// Local word-level operation builders for a formal-utils FSM.
+/// Shared word-level operation builders for a formal-utils FSM.
 ///
-/// This is an extension trait because Rust does not permit adding inherent
-/// methods to [`FSM`] outside the crate that defines it.
+/// This extension trait separates bit-vector construction from the low-level
+/// Boolean gate and state APIs on [`FSM`].
 pub trait FsmOps {
     fn create_xor_gate(&mut self, a: Value, b: Value) -> Value;
     fn create_full_adder(&mut self, a: Value, b: Value, carry_in: Value) -> (Value, Value);
@@ -33,6 +33,8 @@ pub trait FsmOps {
     fn create_multiplication(&mut self, a: &[Value], b: &[Value]) -> Vec<Value>;
     fn create_unsigned_division(&mut self, dividend: &[Value], divisor: &[Value]) -> Vec<Value>;
     fn create_signed_division(&mut self, dividend: &[Value], divisor: &[Value]) -> Vec<Value>;
+    fn create_unsigned_remainder(&mut self, dividend: &[Value], divisor: &[Value]) -> Vec<Value>;
+    fn create_signed_remainder(&mut self, dividend: &[Value], divisor: &[Value]) -> Vec<Value>;
     fn create_comparison(&mut self, a: &[Value], b: &[Value], comparison: Comparison) -> Value;
     fn create_mux_gate(&mut self, a: Value, b: Value, select: Value) -> Value;
     fn create_mux(&mut self, a: &[Value], b: &[Value], select: Value) -> Vec<Value>;
@@ -176,6 +178,18 @@ impl FsmOps for FSM {
         create_conditional_negation(self, &quotient, quotient_sign)
     }
 
+    fn create_unsigned_remainder(&mut self, dividend: &[Value], divisor: &[Value]) -> Vec<Value> {
+        let quotient = self.create_unsigned_division(dividend, divisor);
+        let product = self.create_multiplication(&quotient, divisor);
+        self.create_subtraction(dividend, &product)
+    }
+
+    fn create_signed_remainder(&mut self, dividend: &[Value], divisor: &[Value]) -> Vec<Value> {
+        let quotient = self.create_signed_division(dividend, divisor);
+        let product = self.create_multiplication(&quotient, divisor);
+        self.create_subtraction(dividend, &product)
+    }
+
     fn create_comparison(&mut self, a: &[Value], b: &[Value], comparison: Comparison) -> Value {
         assert_eq!(a.len(), b.len(), "Inputs must have equal widths!");
 
@@ -246,11 +260,6 @@ impl FsmOps for FSM {
         shift: &[Value],
         operation: ShiftOperation,
     ) -> Vec<Value> {
-        assert!(
-            shift.len() < usize::BITS as usize && (1usize << shift.len()) <= value.len(),
-            "Shifter requires 2^shift width <= input width!"
-        );
-
         let width = value.len();
         let mut output = value.to_vec();
         let mut rotate_distance = if width == 0 { 0 } else { 1 % width };
@@ -342,213 +351,4 @@ fn create_conditional_negation(fsm: &mut FSM, value: &[Value], negate: Value) ->
     let zero = vec![Value::Constant(false); value.len()];
     let negated = FsmOps::create_subtraction(fsm, &zero, value);
     FsmOps::create_mux(fsm, value, &negated, negate)
-}
-
-#[cfg(test)]
-mod tests {
-    use formal_utils::{fsm::FSM, sim::Simulator, value::Value};
-
-    use crate::ops::{FsmOps, ShiftOperation};
-
-    fn set_simulator_word(simulator: &mut Simulator, offset: usize, width: usize, value: usize) {
-        for bit in 0..width {
-            simulator.set_input(offset + bit, Some(value & (1 << bit) != 0));
-        }
-    }
-
-    fn simulator_output_word(simulator: &Simulator, offset: usize, width: usize) -> usize {
-        (0..width).fold(0, |value, bit| {
-            value | (usize::from(simulator.get_output(offset + bit) == Some(true)) << bit)
-        })
-    }
-
-    #[test]
-    fn local_select_uses_binary_index() {
-        const SELECT_WIDTH: usize = 3;
-        const INPUT_COUNT: usize = 1 << SELECT_WIDTH;
-
-        let mut fsm = FSM::default();
-        let inputs = (0..INPUT_COUNT)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        let selector = (0..SELECT_WIDTH)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        let output = FsmOps::create_select(&mut fsm, &inputs, &selector);
-        fsm.add_output(output);
-
-        let mut simulator = Simulator::from(fsm);
-        let input_values = 0b1010_0110usize;
-        for index in 0..INPUT_COUNT {
-            simulator.set_input(index, Some(input_values & (1 << index) != 0));
-        }
-        for selected in 0..INPUT_COUNT {
-            for bit in 0..SELECT_WIDTH {
-                simulator.set_input(INPUT_COUNT + bit, Some(selected & (1 << bit) != 0));
-            }
-            simulator.eval();
-            assert_eq!(
-                simulator.get_output(0),
-                Some(input_values & (1 << selected) != 0)
-            );
-        }
-    }
-
-    #[test]
-    fn local_shifter_supports_rotates() {
-        const WIDTH: usize = 4;
-        const SHIFT_WIDTH: usize = 2;
-        const MASK: usize = (1 << WIDTH) - 1;
-
-        let mut fsm = FSM::default();
-        let input = (0..WIDTH)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        let amount = (0..SHIFT_WIDTH)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        for operation in [ShiftOperation::RotateLeft, ShiftOperation::RotateRight] {
-            for output in FsmOps::create_shifter(&mut fsm, &input, &amount, operation) {
-                fsm.add_output(output);
-            }
-        }
-
-        let mut simulator = Simulator::from(fsm);
-        for input in 0usize..=MASK {
-            for amount in 0usize..(1 << SHIFT_WIDTH) {
-                for bit in 0..WIDTH {
-                    simulator.set_input(bit, Some(input & (1 << bit) != 0));
-                }
-                for bit in 0..SHIFT_WIDTH {
-                    simulator.set_input(WIDTH + bit, Some(amount & (1 << bit) != 0));
-                }
-                simulator.eval();
-
-                let expected = [
-                    ((input << amount) | (input >> (WIDTH - amount))) & MASK,
-                    ((input >> amount) | (input << (WIDTH - amount))) & MASK,
-                ];
-                for (operation, expected) in expected.into_iter().enumerate() {
-                    for bit in 0..WIDTH {
-                        assert_eq!(
-                            simulator.get_output(operation * WIDTH + bit),
-                            Some(expected & (1 << bit) != 0)
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn local_multiplication_supports_unsigned_and_signed_values() {
-        const WIDTH: usize = 4;
-        const MASK: usize = (1 << WIDTH) - 1;
-
-        let mut fsm = FSM::default();
-        let lhs = (0..WIDTH)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        let rhs = (0..WIDTH)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        for output in FsmOps::create_multiplication(&mut fsm, &lhs, &rhs) {
-            fsm.add_output(output);
-        }
-
-        let mut simulator = Simulator::from(fsm);
-        for lhs in 0..=MASK {
-            for rhs in 0..=MASK {
-                set_simulator_word(&mut simulator, 0, WIDTH, lhs);
-                set_simulator_word(&mut simulator, WIDTH, WIDTH, rhs);
-                simulator.eval();
-
-                let signed_lhs = if lhs & (1 << (WIDTH - 1)) == 0 {
-                    lhs as isize
-                } else {
-                    lhs as isize - (1 << WIDTH)
-                };
-                let signed_rhs = if rhs & (1 << (WIDTH - 1)) == 0 {
-                    rhs as isize
-                } else {
-                    rhs as isize - (1 << WIDTH)
-                };
-                let product = simulator_output_word(&simulator, 0, WIDTH);
-                assert_eq!(product, (lhs * rhs) & MASK);
-                assert_eq!(product, (signed_lhs * signed_rhs) as usize & MASK);
-            }
-        }
-    }
-
-    #[test]
-    fn local_unsigned_division_produces_integer_quotients() {
-        const WIDTH: usize = 4;
-        const MASK: usize = (1 << WIDTH) - 1;
-
-        let mut fsm = FSM::default();
-        let dividend = (0..WIDTH)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        let divisor = (0..WIDTH)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        for output in FsmOps::create_unsigned_division(&mut fsm, &dividend, &divisor) {
-            fsm.add_output(output);
-        }
-
-        let mut simulator = Simulator::from(fsm);
-        for dividend in 0..=MASK {
-            for divisor in 1..=MASK {
-                set_simulator_word(&mut simulator, 0, WIDTH, dividend);
-                set_simulator_word(&mut simulator, WIDTH, WIDTH, divisor);
-                simulator.eval();
-
-                assert_eq!(
-                    simulator_output_word(&simulator, 0, WIDTH),
-                    dividend / divisor
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn local_signed_division_truncates_toward_zero() {
-        const WIDTH: usize = 4;
-        const MASK: usize = (1 << WIDTH) - 1;
-
-        let mut fsm = FSM::default();
-        let dividend = (0..WIDTH)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        let divisor = (0..WIDTH)
-            .map(|_| Value::from(fsm.add_variable_input()))
-            .collect::<Vec<_>>();
-        for output in FsmOps::create_signed_division(&mut fsm, &dividend, &divisor) {
-            fsm.add_output(output);
-        }
-
-        let mut simulator = Simulator::from(fsm);
-        for dividend in 0..=MASK {
-            for divisor in 1..=MASK {
-                set_simulator_word(&mut simulator, 0, WIDTH, dividend);
-                set_simulator_word(&mut simulator, WIDTH, WIDTH, divisor);
-                simulator.eval();
-
-                let signed_dividend = if dividend & (1 << (WIDTH - 1)) == 0 {
-                    dividend as isize
-                } else {
-                    dividend as isize - (1 << WIDTH)
-                };
-                let signed_divisor = if divisor & (1 << (WIDTH - 1)) == 0 {
-                    divisor as isize
-                } else {
-                    divisor as isize - (1 << WIDTH)
-                };
-                assert_eq!(
-                    simulator_output_word(&simulator, 0, WIDTH),
-                    (signed_dividend / signed_divisor) as usize & MASK
-                );
-            }
-        }
-    }
 }

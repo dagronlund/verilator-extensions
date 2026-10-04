@@ -6,6 +6,7 @@ use std::{
 use formal_utils::{
     fsm::{FSM, verify::VerifyOrdering},
     gate::GateType,
+    ops::{Comparison, FsmOps, ShiftOperation},
     sim::Simulator,
     value::Value,
 };
@@ -18,8 +19,6 @@ use parser_verilator::{
     },
     document::AstDocument,
 };
-
-use crate::ops::{Comparison, FsmOps, ShiftOperation};
 
 pub use crate::error::ConvertError;
 

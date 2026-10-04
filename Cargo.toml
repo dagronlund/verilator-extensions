@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "circt-parser",
+    "circt-formal",
     "verilator-parser",
     "formal-utils",
     "verilator-formal",
