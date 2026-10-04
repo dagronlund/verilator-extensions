@@ -26,6 +26,10 @@ The generated Rust project directory must be new or empty.
 
 The workspace contains the following crates:
 
+- `parser-circt` provides a shared, lossless lexer for CIRCT's MLIR assembly.
+  It uses Logos and shared `Bytes` slices, preserves literal spellings and
+  trivia, and reports file IDs, byte spans, lines, and columns. Keywords remain
+  identifiers for a future parser to interpret in context.
 - `parser-verilator` parses and validates JSON into an owned, strongly typed
   Rust AST. It is independent of the FSM representation.
 - `formal-utils` provides the Boolean FSM, signed variables, three-valued
@@ -47,6 +51,18 @@ and prints a concise summary. The supported regression inputs are tracked in
 
 Target Workflow
 ---------------
+
+Run `./test-circt.sh` to generate the CIRCT fixtures, then
+`cargo test -p parser-circt` to run the lexer tests and lex and round-trip every
+`.mlir` file under this repository's `tests/` directory, including ignored
+build directories. To run just the lexer fixture test with per-file output:
+
+```sh
+cargo test -p parser-circt --test lexer_fixtures -- --nocapture
+```
+
+The lexer fixture test runs by default and reports how to generate the files if none
+are present.
 
 Run `./test.sh` to remove each fixture's `build/` directory, rebuild every
 Verilator fixture, and run all Cargo workspace tests. Additional arguments are
