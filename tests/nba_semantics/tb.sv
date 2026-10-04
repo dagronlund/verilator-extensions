@@ -65,4 +65,15 @@ module nba_semantics (
         enable |=> pipeline == $past(a));
     assert_sampled_blocking: assert property (@(posedge clk) disable iff (!reset_n)
         1'b1 |=> blocking_count == ($past(blocking_count) + 8'd1));
+
+`ifdef CIRCT
+    // Apply reset at the first rising edge, then keep it deasserted.
+    logic circt_past_valid = 1'b0;
+    always @(posedge clk)
+        circt_past_valid <= 1'b1;
+
+    circt_assume_initial_reset: assume property (
+        @(posedge clk) reset_n == circt_past_valid
+    );
+`endif
 endmodule

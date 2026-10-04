@@ -56,4 +56,15 @@ module case_statements (
              selector[1] ? data + 4'd1 :
              selector[0] ? data ^ 4'hf : 4'd0)
     );
+
+`ifdef CIRCT
+    // Apply reset at the first rising edge, then keep it deasserted.
+    logic circt_past_valid = 1'b0;
+    always @(posedge clk)
+        circt_past_valid <= 1'b1;
+
+    circt_assume_initial_reset: assume property (
+        @(posedge clk) reset_n == circt_past_valid
+    );
+`endif
 endmodule

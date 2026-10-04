@@ -1,0 +1,17 @@
+builddir = build
+sources = std/std_pkg.sv stream/stream_pkg.sv stream/stream_intf.sv std/std_register.sv stream/stream_stage.sv tb.sv
+
+rule prepare
+  command = mkdir -p build && rm -f build/ast.json && touch $out
+  description = PREPARE $out
+
+rule verilate
+  command = verilator --cc -fno-table -fno-delayed --ast-pre-codegen build/ast.json --coverage-user --sva-preserve --top-module stream_stage_formal --Mdir build $sources && touch $out
+  description = VERILATE stream_stage_formal
+
+build source_files: phony std/std_pkg.sv stream/stream_pkg.sv stream/stream_intf.sv std/std_register.sv stream/stream_stage.sv tb.sv
+
+build build/.prepared: prepare source_files
+build build/.verilated: verilate source_files | build/.prepared
+
+default build/.verilated

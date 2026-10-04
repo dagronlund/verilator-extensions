@@ -108,4 +108,15 @@ module fifo_stage_tb #(
         @(posedge clk) disable iff (!reset_n)
         fifo_count == FULL_COUNT && pop
     );
+
+`ifdef CIRCT
+    // Apply reset at the first rising edge, then keep it deasserted.
+    logic circt_past_valid = 1'b0;
+    always @(posedge clk)
+        circt_past_valid <= 1'b1;
+
+    circt_assume_initial_reset: assume property (
+        @(posedge clk) reset_n == circt_past_valid
+    );
+`endif
 endmodule

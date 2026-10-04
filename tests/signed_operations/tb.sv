@@ -54,4 +54,15 @@ module signed_operations (
         @(posedge clk) (signed_lhs >= signed_rhs) ==
             ((lhs ^ 4'b1000) >= (rhs ^ 4'b1000))
     );
+
+`ifdef CIRCT
+    // Apply reset at the first rising edge, then keep it deasserted.
+    logic circt_past_valid = 1'b0;
+    always @(posedge clk)
+        circt_past_valid <= 1'b1;
+
+    circt_assume_initial_reset: assume property (
+        @(posedge clk) reset_n == circt_past_valid
+    );
+`endif
 endmodule

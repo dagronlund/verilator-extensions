@@ -523,4 +523,15 @@ module packet_switch_tb #(
         (ref_count0 == DEPTH_COUNT && pop0 && push0) ||
         (ref_count1 == DEPTH_COUNT && pop1 && push1)
     );
+
+`ifdef CIRCT
+    // Apply reset at the first rising edge, then keep it deasserted.
+    logic circt_past_valid = 1'b0;
+    always @(posedge clk)
+        circt_past_valid <= 1'b1;
+
+    circt_assume_initial_reset: assume property (
+        @(posedge clk) reset_n == circt_past_valid
+    );
+`endif
 endmodule

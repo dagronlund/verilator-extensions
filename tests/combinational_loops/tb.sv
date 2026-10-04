@@ -13,4 +13,15 @@ module combinational_loops (
     assign total = counts[0] + counts[1];
 
     assert_total: assert property (@(posedge clk) total == 32'd3);
+
+`ifdef CIRCT
+    // Apply reset at the first rising edge, then keep it deasserted.
+    logic circt_past_valid = 1'b0;
+    always @(posedge clk)
+        circt_past_valid <= 1'b1;
+
+    circt_assume_initial_reset: assume property (
+        @(posedge clk) reset_n == circt_past_valid
+    );
+`endif
 endmodule
