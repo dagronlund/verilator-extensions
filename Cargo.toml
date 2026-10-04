@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "parser-circt",
-    "parser-verilator",
+    "circt-parser",
+    "verilator-parser",
     "formal-utils",
-    "formal",
+    "verilator-formal",
     "simulator-rust",
     "simulator-rust/simulator-rust-runtime",
 ]

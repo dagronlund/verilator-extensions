@@ -6,7 +6,7 @@ publish.workspace = true
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-parser-verilator = { path = "../parser-verilator" }
+parser-verilator = { path = "../verilator-parser" }
 
 [lints]
 workspace = true
