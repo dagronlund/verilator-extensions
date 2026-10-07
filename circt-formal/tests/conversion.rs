@@ -113,6 +113,25 @@ fn check_fixture(name: &str) {
 }
 
 #[test]
+fn data_types() {
+    check_fixture("data_types");
+    let model = fixture("data_types", false);
+    let overlay = (&model.registers)
+        .into_iter()
+        .find(|signal| signal.name == "overlay_value")
+        .unwrap();
+    assert_eq!(overlay.bits.len(), 16);
+    let mut sim = simulator(&model);
+    set(&model, &mut sim, "data_in", 0x5a);
+    tick(&mut sim);
+    assert_eq!(word(overlay, &sim), 0x5a5a);
+    tick(&mut sim);
+    assert_eq!(output(&model, &sim, "data_out"), 0x5a5a ^ 0x5ab0 ^ 23100);
+    assert_eq!(output(&model, &sim, "shortint_out"), 0x5a5a);
+    assert_eq!(output(&model, &sim, "longint_out"), 0x5a5a5a5a5a5a5a5a);
+}
+
+#[test]
 fn case_statements() {
     check_fixture("case_statements");
 }
@@ -658,6 +677,47 @@ fn bitcasts_preserve_arbitrary_width_values() {
 }
 
 #[test]
+fn union_extraction_uses_overlapping_storage_and_member_offsets() {
+    let model = source(
+        r#"hw.module @m(in %clk: i1, in %bits: i24, out raw: i16, out nibble: i4, out high: i4, out fields: !hw.struct<a: i4, b: i4>, out lane: i12) {
+        %raw = hw.union_extract %u["raw"] : !hw.union<raw: i16, nibble: i4 offset 8, high: i4 offset 20, fields: !hw.struct<a: i4, b: i4> offset 4>
+        %u = hw.bitcast %bits : (i24) -> !hw.union<raw: i16, nibble: i4 offset 8, high: i4 offset 20, fields: !hw.struct<a: i4, b: i4> offset 4>
+        %nibble = hw.union_extract %u["nibble"] : !hw.union<raw: i16, nibble: i4 offset 8, high: i4 offset 20, fields: !hw.struct<a: i4, b: i4> offset 4>
+        %high = hw.union_extract %u["high"] : !hw.union<raw: i16, nibble: i4 offset 8, high: i4 offset 20, fields: !hw.struct<a: i4, b: i4> offset 4>
+        %fields = hw.union_extract %u["fields"] : !hw.union<raw: i16, nibble: i4 offset 8, high: i4 offset 20, fields: !hw.struct<a: i4, b: i4> offset 4>
+        %array = hw.bitcast %bits : (i24) -> !hw.array<2xunion<small: i3, raw: i12>>
+        %one = hw.constant true
+        %element = hw.array_get %array[%one] : !hw.array<2xunion<small: i3, raw: i12>>, i1
+        %lane = hw.union_extract %element["raw"] : !hw.union<small: i3, raw: i12>
+        hw.output %raw, %nibble, %high, %fields, %lane : i16, i4, i4, !hw.struct<a: i4, b: i4>, i12
+    }"#,
+    );
+    model.fsm.verify(VerifyOrdering::Verify);
+    let mut sim = simulator(&model);
+    for bits in [0, 1, 0x123456, 0xabcdef, 0xffffff] {
+        set(&model, &mut sim, "bits", bits);
+        sim.eval();
+        for (name, shift, mask) in [
+            ("raw", 0, 0xffff),
+            ("nibble", 8, 0xf),
+            ("high", 20, 0xf),
+            ("fields", 4, 0xff),
+            ("lane", 12, 0xfff),
+        ] {
+            assert_eq!(output(&model, &sim, name), (bits >> shift) & mask);
+        }
+    }
+    for (signal, offset) in (&model.outputs).into_iter().zip([0, 8, 20, 4]) {
+        for bit in &signal.bits {
+            assert_eq!(
+                bit.value,
+                model.inputs[0].bits[bit.index as usize + offset].value
+            );
+        }
+    }
+}
+
+#[test]
 fn malformed_graphs_return_positioned_errors() {
     let cases = [
         (
@@ -723,6 +783,30 @@ fn malformed_graphs_return_positioned_errors() {
         (
             "hw.module @m(in %clk: i1) { %b = hw.bitcast %clk : (i1) -> i1 hw.output }",
             "clock used as ordinary data",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %u: !hw.union<raw: i8>) { %r = hw.union_extract %u[\"missing\"] : !hw.union<raw: i8> hw.output }",
+            "unknown union member",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %u: !hw.union<raw: i8>) { %r = hw.union_extract %u[\"other\"] : !hw.union<other: i8> hw.output }",
+            "type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i8) { %r = hw.union_extract %a[\"raw\"] : i8 hw.output }",
+            "requires a union type",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i8) { %r = hw.bitcast %a : (i8) -> !hw.union<> hw.output }",
+            "empty aggregates",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i8) { %r = hw.bitcast %a : (i8) -> !hw.union<raw: i8, raw: i4> hw.output }",
+            "duplicate union member",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i8) { %r = hw.bitcast %a : (i8) -> !hw.union<raw: i8 offset 18446744073709551615> hw.output }",
+            "overflow",
         ),
         (
             "hw.module @m(in %clk: i1, out o: i4) { hw.output %clk : i1 }",

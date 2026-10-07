@@ -24,7 +24,7 @@ use crate::{
         Attribute, AttributeValue, ClockEdge, CombOperator, ComparisonPredicate, ConstantValue,
         File, HwModule, InstanceInput, IntegerLiteral, Item, Location, Module, Name, Operation,
         OperationKind, Port, PortDirection, PropertyKind, Reset, ResetKind, ResultBinding,
-        Signedness, StringLiteral, Type, TypeField, Value, Visibility,
+        Signedness, StringLiteral, Type, TypeField, UnionField, Value, Visibility,
     },
     lexer::{
         Lexer,
@@ -357,6 +357,9 @@ impl Parser {
             "!hw.struct" | "struct" if name == "!hw.struct" || abbreviated => Ok(Type::Struct(
                 self.group("<", ">", |p| p.type_field(abbreviated))?,
             )),
+            "!hw.union" | "union" if name == "!hw.union" || abbreviated => {
+                Ok(Type::Union(self.group("<", ">", UnionField::parse)?))
+            }
             "!hw.inout" | "inout" if name == "!hw.inout" || abbreviated => {
                 self.expect("<")?;
                 let element = self.parse_type(abbreviated)?;
@@ -491,6 +494,18 @@ impl Parser {
                         array_type,
                         index_type,
                     }
+                }
+            }
+            "hw.union_extract" => {
+                let input = Value::parse(self)?;
+                self.expect("[")?;
+                let field = StringLiteral::parse(self)?;
+                self.expect("]")?;
+                let union_type = self.typed(attributes)?;
+                OperationKind::UnionExtract {
+                    input,
+                    field,
+                    union_type,
                 }
             }
             "comb.icmp" => {
@@ -840,6 +855,20 @@ impl ParserNode for Type {
 impl ParserNode for TypeField {
     fn parse(parser: &mut Parser) -> ParserResult<Self> {
         parser.type_field(false)
+    }
+}
+
+impl ParserNode for UnionField {
+    fn parse(parser: &mut Parser) -> ParserResult<Self> {
+        let name = parser.name(LexerTokenKind::Identifier)?;
+        parser.expect(":")?;
+        let ty = Type::parse(parser)?;
+        let offset = if parser.optional("offset") {
+            Some(parser.unsigned::<u64>("union field offset")?)
+        } else {
+            None
+        };
+        Ok(Self { name, ty, offset })
     }
 }
 

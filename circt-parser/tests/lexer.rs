@@ -299,6 +299,11 @@ fn lexer_round_trips_mlir(path: impl AsRef<Path>) {
 }
 
 #[test]
+fn fixture_data_types() {
+    lexer_round_trips_mlir("res/data_types.hw.mlir");
+}
+
+#[test]
 fn fixture_case_statements() {
     lexer_round_trips_mlir("res/case_statements.hw.mlir");
 }

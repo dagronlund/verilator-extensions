@@ -87,11 +87,11 @@ spellings are not part of the AST.
 
 The parser supports `module`/`builtin.module`, `hw.module`, `hw.module.extern`,
 `hw.constant`, `hw.instance`, `hw.output`, `hw.bitcast`, `hw.array_get`, and
-`hw.array_inject`.
+`hw.array_inject`, and `hw.union_extract`.
 It also handles the formal-core fixtures' comb arithmetic, logic, comparisons,
 muxes, concatenations, replications and extracts; `seq.to_clock`, `seq.firreg`, and
 `seq.compreg`; and clocked verif assertions, assumptions, and covers. Types
-include integers, nested HW arrays and structs, inouts, clocks, and type-alias
+include integers, nested HW arrays, structs and unions, inouts, clocks, and type-alias
 references. Generic operation assembly, parameterized module declarations,
 type declarations, and other dialect operations are currently unsupported and
 produce positioned errors. SSA names are retained, including forward references,
@@ -327,13 +327,16 @@ To generate fresh input, use the `circt-verilog --ir-hw` frontend followed by
 inference with `--detect-memories=false` to retain register arrays. The converter
 accepts the parser's binary formal-core subset, including forward SSA references,
 grouped instance results, nested instances, fixed-width integers, arrays, packed
-struct passthrough, equal-width bitcasts between integers, arrays, and structs,
+struct and union passthrough, union member extraction, equal-width bitcasts
+between integers, arrays, structs, and unions,
 arithmetic/comparisons, dynamic array reads and injection,
 `seq.firreg`, `seq.compreg`, and clocked assertions, assumptions, and covers.
 CIRCT has already lowered procedural and temporal semantics into this graph.
 
 Bits are LSB-first, array element zero is the least-significant slice, and the
-first declared struct field/concatenation operand is most significant. Arithmetic
+first declared struct field/concatenation operand is most significant.
+Union members overlap at their declared bit offsets (zero when omitted); the
+union width is the largest member endpoint (offset plus width). Arithmetic
 uses explicit widths and operation signedness, without implicit resizing.
 The model uses binary logic even for operations without `bin`; case/wildcard
 comparisons reduce to ordinary equality. X/Z semantics are outside this subset.

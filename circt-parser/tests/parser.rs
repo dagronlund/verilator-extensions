@@ -256,6 +256,68 @@ fn arrays_muxes_concat_extract_and_attributes() {
 }
 
 #[test]
+fn union_members_offsets_and_extraction_round_trip() {
+    let source = r#"hw.module @unions(in %u: !hw.union<raw: i16, low: i4 offset 0, high: i4 offset 8, fields: !hw.struct<a: i4, b: i4>>, in %array: !hw.array<2xunion<raw: i8, low: i4>>, out y: i4) {
+        %y = hw.union_extract %u["high"] {sv.namehint = "member"} : !hw.union<raw: i16, low: i4 offset 0, high: i4 offset 8, fields: !hw.struct<a: i4, b: i4>> loc("union.sv":2:3)
+        hw.output %y : i4
+    }"#;
+    let file = parse(7, source).unwrap();
+    let Item::HwModule(module) = &file.items[0] else {
+        panic!()
+    };
+    let Type::Union(fields) = &module.ports[0].ty else {
+        panic!()
+    };
+    assert_eq!(fields.len(), 4);
+    assert_eq!(fields[0].name.spelling.as_ref(), b"raw");
+    assert_eq!(fields[0].ty, integer(16));
+    assert_eq!(fields[0].offset, None);
+    assert_eq!(fields[1].offset, Some(0));
+    assert_eq!(fields[2].offset, Some(8));
+    let Type::Struct(members) = &fields[3].ty else {
+        panic!()
+    };
+    assert_eq!(members.len(), 2);
+    let Type::Array { element, .. } = &module.ports[1].ty else {
+        panic!()
+    };
+    let Type::Union(members) = &**element else {
+        panic!()
+    };
+    assert_eq!(members.len(), 2);
+    let op = &module.body.as_ref().unwrap()[0];
+    let OperationKind::UnionExtract {
+        input,
+        field,
+        union_type,
+    } = &op.kind
+    else {
+        panic!()
+    };
+    assert_eq!(input.name.spelling.as_ref(), b"%u");
+    assert_eq!(field.spelling.as_ref(), br#""high""#);
+    let Type::Union(operation_members) = union_type else {
+        panic!()
+    };
+    assert_eq!(operation_members.len(), fields.len());
+    assert_eq!(operation_members[0].ty, integer(16));
+    assert_eq!(operation_members[2].offset, Some(8));
+    assert_eq!(op.attributes.len(), 1);
+    assert_eq!(
+        op.location.as_ref().unwrap().spelling.as_ref(),
+        br#"loc("union.sv":2:3)"#
+    );
+    let tokens = Lexer::new(7, source)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .into_iter()
+        .filter(|token| !token.kind.is_whitespace())
+        .collect::<Vec<_>>();
+    assert_tokens_equal(&tokens, write(7, &file).unwrap().tokens());
+    assert_round_trip(&file, 8);
+}
+
+#[test]
 fn bitcast_preserves_types_attributes_locations_and_round_trips() {
     let source = r#"hw.module @bitcast(in %bits: i8, out y: i8) {
         %array = hw.bitcast %bits {sv.namehint = "array", test.flag} : (i8) -> !hw.array<2xi4> loc("bitcast.sv":4:5)
@@ -541,6 +603,12 @@ fn malformed_and_unsupported_assembly_is_rejected() {
         "hw.module @m() { %r = hw.bitcast %a : (i4, i4) -> i8 }",
         "hw.module @m() { %r = hw.bitcast %a : (i4) i4 }",
         "hw.module @m() { %r = hw.bitcast %a : (i4) -> i0 }",
+        "hw.module @m(in %a: !hw.union<raw i4>) {}",
+        "hw.module @m(in %a: !hw.union<raw: i4 offset -1>) {}",
+        "hw.module @m(in %a: !hw.union<raw: i4 offset 18446744073709551616>) {}",
+        "hw.module @m() { %r = hw.union_extract %a[raw] : !hw.union<raw: i4> }",
+        "hw.module @m() { %r = hw.union_extract %a[\"raw\" : !hw.union<raw: i4> }",
+        "hw.module @m() { %r = hw.union_extract %a[\"raw\"] }",
         "hw.module @m() { %r = comb.replicate %a, %b : (i4) -> i8 }",
         "hw.module @m() { %r = comb.replicate %a : i4 -> i8 }",
         "hw.module @m() { %r = comb.replicate %a : (i4, i4) -> i8 }",
@@ -657,6 +725,11 @@ fn parser_round_trips_mlir(path: impl AsRef<Path>) {
     }
     assert_eq!(modules.len(), expected_modules, "{}", path.display());
     assert_eq!(operations, expected_operations, "{}", path.display());
+}
+
+#[test]
+fn fixture_data_types() {
+    parser_round_trips_mlir("res/data_types.hw.mlir");
 }
 
 #[test]

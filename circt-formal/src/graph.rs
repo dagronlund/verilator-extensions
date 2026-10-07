@@ -14,6 +14,7 @@ pub(crate) enum Ty {
     Integer(usize, Signedness),
     Array(usize, Box<Ty>),
     Struct(Vec<(String, Ty)>),
+    Union(Vec<(String, Ty, usize)>),
     Clock,
 }
 
@@ -33,6 +34,20 @@ impl Ty {
                     .map(|field| Ok((name(&field.name)?, Self::parse(&field.ty)?)))
                     .collect::<Result<_, ConvertError>>()?,
             ),
+            Type::Union(fields) if !fields.is_empty() => {
+                let mut names = BTreeSet::new();
+                let mut members = Vec::new();
+                for field in fields {
+                    let name = name(&field.name)?;
+                    if !names.insert(name.clone()) {
+                        return Err(ConvertError::message("duplicate union member name"));
+                    }
+                    let offset = usize::try_from(field.offset.unwrap_or(0))
+                        .map_err(|_| ConvertError::message("union field offset overflow"))?;
+                    members.push((name, Self::parse(&field.ty)?, offset));
+                }
+                Self::Union(members)
+            }
             Type::Clock => Self::Clock,
             _ => {
                 return Err(ConvertError::message(
@@ -57,12 +72,33 @@ impl Ty {
                     .checked_add(field.width()?)
                     .ok_or_else(|| ConvertError::message("struct width overflow"))
             }),
+            Self::Union(fields) => {
+                fields
+                    .into_iter()
+                    .try_fold(0usize, |width, (_, field, offset)| {
+                        let end = offset
+                            .checked_add(field.width()?)
+                            .ok_or_else(|| ConvertError::message("union width overflow"))?;
+                        Ok(width.max(end))
+                    })
+            }
             Self::Clock => Err(ConvertError::message("clock used as data")),
         }
     }
 
     pub fn is_bit(&self) -> bool {
         *self == bit_type()
+    }
+
+    pub fn union_field(&self, field: &str) -> Result<(&Ty, usize), ConvertError> {
+        let Self::Union(fields) = self else {
+            return Err(ConvertError::message("union_extract requires a union type"));
+        };
+        fields
+            .into_iter()
+            .find(|(name, _, _)| name == field)
+            .map(|(_, ty, offset)| (ty, *offset))
+            .ok_or_else(|| ConvertError::message(format!("unknown union member `{field}`")))
     }
 }
 
@@ -847,6 +883,15 @@ impl Graph {
                     }
                 }
             }
+            OperationKind::UnionExtract {
+                union_type, field, ..
+            } => {
+                let expected = Ty::parse(union_type)?;
+                let (member, _) = expected.union_field(&decode(&field.spelling)?)?;
+                if *types[0] != expected || node.ty != *member {
+                    return Err(fail("union_extract operand/result type mismatch"));
+                }
+            }
             OperationKind::Bitcast { input_type, .. } => {
                 if *types[0] != Ty::parse(input_type)? {
                     return Err(fail("bitcast operand type mismatch"));
@@ -1050,6 +1095,12 @@ fn result_types(kind: &OperationKind) -> Result<Vec<Ty>, ConvertError> {
         | OperationKind::CompReg { ty, .. } => Ty::parse(ty)?,
         OperationKind::Compare { .. } => bit_type(),
         OperationKind::ToClock { .. } => Ty::Clock,
+        OperationKind::UnionExtract {
+            union_type, field, ..
+        } => Ty::parse(union_type)?
+            .union_field(&decode(&field.spelling)?)?
+            .0
+            .clone(),
         OperationKind::Bitcast { result_type, .. }
         | OperationKind::Replicate { result_type, .. }
         | OperationKind::Extract { result_type, .. } => Ty::parse(result_type)?,
@@ -1106,7 +1157,8 @@ fn operands(kind: &OperationKind) -> Vec<&Value> {
             false_value,
             ..
         } => vec![condition, true_value, false_value],
-        OperationKind::Bitcast { input, .. }
+        OperationKind::UnionExtract { input, .. }
+        | OperationKind::Bitcast { input, .. }
         | OperationKind::Replicate { input, .. }
         | OperationKind::Extract { input, .. }
         | OperationKind::ToClock { input } => vec![input],

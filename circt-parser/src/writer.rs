@@ -24,7 +24,7 @@ use crate::{
         Attribute, AttributeValue, ClockEdge, CombOperator, ComparisonPredicate, ConstantValue,
         File, HwModule, InstanceInput, IntegerLiteral, Item, Location, Module, Name, Operation,
         OperationKind, Port, PortDirection, PropertyKind, Reset, ResetKind, ResultBinding,
-        Signedness, StringLiteral, Type, TypeField, Value, Visibility,
+        Signedness, StringLiteral, Type, TypeField, UnionField, Value, Visibility,
     },
     lexer::{
         Lexer,
@@ -371,6 +371,22 @@ impl Type {
                 source.push('>');
                 source
             }
+            Self::Union(fields) => {
+                let mut source = format!("{prefix}union<");
+                for (index, field) in fields.into_iter().enumerate() {
+                    if index > 0 {
+                        source.push_str(", ");
+                    }
+                    source.push_str(from_utf8(&field.name.spelling)?);
+                    source.push_str(": ");
+                    source.push_str(&field.ty.assembly(false)?);
+                    if let Some(offset) = field.offset {
+                        source.push_str(&format!(" offset {offset}"));
+                    }
+                }
+                source.push('>');
+                source
+            }
             Self::InOut(element) => {
                 format!("{prefix}inout<{}>", element.assembly(false)?)
             }
@@ -390,6 +406,18 @@ impl WriterNode for TypeField {
     fn write(&self, writer: &mut Writer) -> WriterResult<()> {
         self.name.write(writer)?;
         writer.ty(&self.ty)
+    }
+}
+
+impl WriterNode for UnionField {
+    fn write(&self, writer: &mut Writer) -> WriterResult<()> {
+        self.name.write(writer)?;
+        writer.ty(&self.ty)?;
+        if let Some(offset) = self.offset {
+            writer.keyword("offset");
+            writer.integer(offset);
+        }
+        Ok(())
     }
 }
 
@@ -580,6 +608,13 @@ impl WriterNode for Operation {
                 writer.keyword("comb.concat");
                 writer.list(operands)?;
             }
+            OperationKind::UnionExtract { input, field, .. } => {
+                writer.keyword("hw.union_extract");
+                input.write(writer)?;
+                writer.symbol("[");
+                field.write(writer)?;
+                writer.symbol("]");
+            }
             OperationKind::Bitcast { input, .. } => {
                 writer.keyword("hw.bitcast");
                 input.write(writer)?;
@@ -685,6 +720,7 @@ impl WriterNode for Operation {
             | OperationKind::FirReg { ty, .. }
             | OperationKind::CompReg { ty, .. }
             | OperationKind::ClockedProperty { ty, .. } => writer.ty(ty)?,
+            OperationKind::UnionExtract { union_type, .. } => writer.ty(union_type)?,
             OperationKind::Output { types, .. } => {
                 if !types.is_empty() {
                     writer.symbol(":");

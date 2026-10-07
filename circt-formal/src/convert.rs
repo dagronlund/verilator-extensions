@@ -555,6 +555,13 @@ impl Converter {
                     OperationKind::Mux { .. } => {
                         self.fsm.create_mux(&values[2], &values[1], values[0][0])
                     }
+                    OperationKind::UnionExtract {
+                        union_type, field, ..
+                    } => {
+                        let ty = Ty::parse(union_type)?;
+                        let (member, offset) = ty.union_field(&decode(&field.spelling)?)?;
+                        values[0][offset..offset + member.width()?].to_vec()
+                    }
                     OperationKind::Bitcast { .. } => values[0].clone(),
                     OperationKind::Concat { .. } => values.into_iter().rev().flatten().collect(),
                     OperationKind::Replicate { .. } => {

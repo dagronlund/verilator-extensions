@@ -107,6 +107,7 @@ pub enum Type {
         element: Box<Type>,
     },
     Struct(Vec<TypeField>),
+    Union(Vec<UnionField>),
     InOut(Box<Type>),
     Clock,
     /// A reference to a declared type alias, such as `!word`.
@@ -117,6 +118,14 @@ pub enum Type {
 pub struct TypeField {
     pub name: Name,
     pub ty: Type,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnionField {
+    pub name: Name,
+    pub ty: Type,
+    /// Omitted offsets are zero; retain explicit zero offsets for round trips.
+    pub offset: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -257,6 +266,11 @@ pub enum OperationKind {
         input: Value,
         input_type: Type,
         result_type: Type,
+    },
+    UnionExtract {
+        input: Value,
+        field: StringLiteral,
+        union_type: Type,
     },
     ArrayGet {
         array: Value,
