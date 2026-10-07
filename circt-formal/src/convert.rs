@@ -556,6 +556,9 @@ impl Converter {
                         self.fsm.create_mux(&values[2], &values[1], values[0][0])
                     }
                     OperationKind::Concat { .. } => values.into_iter().rev().flatten().collect(),
+                    OperationKind::Replicate { .. } => {
+                        values[0].repeat(node.ty.width()? / values[0].len())
+                    }
                     OperationKind::Extract { offset, .. } => {
                         values[0][*offset as usize..*offset as usize + node.ty.width()?].to_vec()
                     }

@@ -847,6 +847,21 @@ impl Graph {
                     }
                 }
             }
+            OperationKind::Replicate { input_type, .. } => {
+                if !matches_integer(&node.ty)
+                    || !matches_integer(types[0])
+                    || *types[0] != Ty::parse(input_type)?
+                {
+                    return Err(fail("replicate operand/result type mismatch"));
+                }
+                let input_width = types[0].width()?;
+                let result_width = node.ty.width()?;
+                if result_width < input_width || !result_width.is_multiple_of(input_width) {
+                    return Err(fail(
+                        "replicate result width must be a positive multiple of input width",
+                    ));
+                }
+            }
             OperationKind::Extract {
                 input_type, offset, ..
             } => {
@@ -1027,7 +1042,8 @@ fn result_types(kind: &OperationKind) -> Result<Vec<Ty>, ConvertError> {
         | OperationKind::CompReg { ty, .. } => Ty::parse(ty)?,
         OperationKind::Compare { .. } => bit_type(),
         OperationKind::ToClock { .. } => Ty::Clock,
-        OperationKind::Extract { result_type, .. } => Ty::parse(result_type)?,
+        OperationKind::Replicate { result_type, .. }
+        | OperationKind::Extract { result_type, .. } => Ty::parse(result_type)?,
         OperationKind::ArrayInject { array_type, .. } => Ty::parse(array_type)?,
         OperationKind::ArrayGet { array_type, .. } => match Ty::parse(array_type)? {
             Ty::Array(_, element) => *element,
@@ -1081,7 +1097,9 @@ fn operands(kind: &OperationKind) -> Vec<&Value> {
             false_value,
             ..
         } => vec![condition, true_value, false_value],
-        OperationKind::Extract { input, .. } | OperationKind::ToClock { input } => vec![input],
+        OperationKind::Replicate { input, .. }
+        | OperationKind::Extract { input, .. }
+        | OperationKind::ToClock { input } => vec![input],
         OperationKind::FirReg {
             input,
             clock,

@@ -256,6 +256,52 @@ fn arrays_muxes_concat_extract_and_attributes() {
 }
 
 #[test]
+fn replicate_preserves_types_attributes_locations_and_round_trips() {
+    let source = r#"hw.module @replicate(in %a: i3, in %b: i1, out y: i9) {
+        %r = comb.replicate %a {sv.namehint = "repeated", test.flag} : (i3) -> i9 loc("replicate.sv":4:5)
+        %bit = comb.replicate %b : (i1) -> i8
+        %same = comb.replicate %a : (i3) -> i3
+        hw.output %r : i9
+    }"#;
+    let file = parse(7, source).unwrap();
+    let Item::HwModule(module) = &file.items[0] else {
+        panic!()
+    };
+    let body = module.body.as_ref().unwrap();
+    for (operation, name, input_width, result_width) in [
+        (&body[0], b"%a", 3, 9),
+        (&body[1], b"%b", 1, 8),
+        (&body[2], b"%a", 3, 3),
+    ] {
+        let OperationKind::Replicate {
+            input,
+            input_type,
+            result_type,
+        } = &operation.kind
+        else {
+            panic!()
+        };
+        assert_eq!(input.name.spelling.as_ref(), name);
+        assert_eq!(*input_type, integer(input_width));
+        assert_eq!(*result_type, integer(result_width));
+    }
+    assert_eq!(body[0].attributes.len(), 2);
+    assert_eq!(
+        body[0].location.as_ref().unwrap().spelling.as_ref(),
+        br#"loc("replicate.sv":4:5)"#
+    );
+    assert!(source[body[0].position.range()].starts_with("%r = comb.replicate"));
+    let tokens = Lexer::new(7, source)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .into_iter()
+        .filter(|token| !token.kind.is_whitespace())
+        .collect::<Vec<_>>();
+    assert_tokens_equal(&tokens, write(7, &file).unwrap().tokens());
+    assert_round_trip(&file, 8);
+}
+
+#[test]
 fn registers_resets_presets_and_property_labels() {
     let body = hw_module(
         r#"hw.module @regs(in %clk: i1) {
@@ -428,6 +474,12 @@ fn malformed_and_unsupported_assembly_is_rejected() {
         "hw.module @m() { %r = comb.sub %a, %b, %c : i4 }",
         "hw.module @m() { %r = comb.add %a, : i4 }",
         "hw.module @m() { %r = comb.concat %a, %b : i4 }",
+        "hw.module @m() { %r = comb.replicate %a, %b : (i4) -> i8 }",
+        "hw.module @m() { %r = comb.replicate %a : i4 -> i8 }",
+        "hw.module @m() { %r = comb.replicate %a : (i4, i4) -> i8 }",
+        "hw.module @m() { %r = comb.replicate %a : (i4) i8 }",
+        "hw.module @m() { %r = comb.replicate bin %a : (i4) -> i8 }",
+        "hw.module @m() { %r = comb.replicate %a : (i4) -> i0 }",
         "hw.module @m() { hw.output %a, %b : i4 }",
         "hw.module @m() { %r = hw.instance \"i\" @child() -> (a:i4, b:i4) }",
         "hw.module @m() { %r = comb.add %a#name, %b : i4 }",

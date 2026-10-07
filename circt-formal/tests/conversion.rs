@@ -555,6 +555,47 @@ fn arbitrary_width_literals_concat_extract_and_struct_passthrough() {
 }
 
 #[test]
+fn replication_repeats_lsb_first_bits_without_extra_logic() {
+    let model = source(
+        r#"hw.module @m(in %clk: i1, in %a: i3, in %b: i1, out repeated: i12, out bit: i8, out same: i3, out wide: i129) {
+        %repeated = comb.replicate %later : (i3) -> i12
+        %later = comb.replicate %a : (i3) -> i3
+        %bit = comb.replicate %b : (i1) -> i8
+        %wide = comb.replicate %a : (i3) -> i129
+        hw.output %repeated, %bit, %later, %wide : i12, i8, i3, i129
+    }"#,
+    );
+    model.fsm.verify(VerifyOrdering::Verify);
+    let mut sim = simulator(&model);
+    for a in 0..8 {
+        for b in 0..2 {
+            set(&model, &mut sim, "a", a);
+            set(&model, &mut sim, "b", b);
+            sim.eval();
+            assert_eq!(output(&model, &sim, "repeated"), a * 0x249);
+            assert_eq!(output(&model, &sim, "bit"), b * 0xff);
+            assert_eq!(output(&model, &sim, "same"), a);
+            for bit in &model.outputs[3].bits {
+                assert_eq!(
+                    sim.get_value_signed(bit.value),
+                    Some(a & (1 << (bit.index % 3)) != 0)
+                );
+            }
+        }
+    }
+    for (result, input, width) in [
+        (&model.outputs[0], &model.inputs[0], 3),
+        (&model.outputs[1], &model.inputs[1], 1),
+        (&model.outputs[2], &model.inputs[0], 3),
+        (&model.outputs[3], &model.inputs[0], 3),
+    ] {
+        for bit in &result.bits {
+            assert_eq!(bit.value, input.bits[(bit.index % width) as usize].value);
+        }
+    }
+}
+
+#[test]
 fn malformed_graphs_return_positioned_errors() {
     let cases = [
         (
@@ -576,6 +617,26 @@ fn malformed_graphs_return_positioned_errors() {
         (
             "hw.module @m(in %clk: i1, in %a: i4) { %b = comb.extract %a from 3 : (i4) -> i2 hw.output }",
             "range mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i4) { %b = comb.replicate %a : (i4) -> i6 hw.output }",
+            "positive multiple",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i4) { %b = comb.replicate %a : (i4) -> i2 hw.output }",
+            "positive multiple",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i4) { %b = comb.replicate %a : (i2) -> i8 hw.output }",
+            "type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: !hw.array<2xi4>) { %b = comb.replicate %a : (!hw.array<2xi4>) -> i16 hw.output }",
+            "type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i4) { %b = comb.replicate %a : (i4) -> !hw.array<2xi4> hw.output }",
+            "type mismatch",
         ),
         (
             "hw.module @m(in %clk: i1, out o: i4) { hw.output %clk : i1 }",

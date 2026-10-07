@@ -88,7 +88,7 @@ spellings are not part of the AST.
 The parser supports `module`/`builtin.module`, `hw.module`, `hw.module.extern`,
 `hw.constant`, `hw.instance`, `hw.output`, `hw.array_get`, and `hw.array_inject`.
 It also handles the formal-core fixtures' comb arithmetic, logic, comparisons,
-muxes, concatenations and extracts; `seq.to_clock`, `seq.firreg`, and
+muxes, concatenations, replications and extracts; `seq.to_clock`, `seq.firreg`, and
 `seq.compreg`; and clocked verif assertions, assumptions, and covers. Types
 include integers, nested HW arrays and structs, inouts, clocks, and type-alias
 references. Generic operation assembly, parameterized module declarations,

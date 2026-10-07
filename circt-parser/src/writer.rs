@@ -580,6 +580,10 @@ impl WriterNode for Operation {
                 writer.keyword("comb.concat");
                 writer.list(operands)?;
             }
+            OperationKind::Replicate { input, .. } => {
+                writer.keyword("comb.replicate");
+                input.write(writer)?;
+            }
             OperationKind::Extract { input, offset, .. } => {
                 writer.keyword("comb.extract");
                 input.write(writer)?;
@@ -701,7 +705,12 @@ impl WriterNode for Operation {
                 writer.symbol(",");
                 index_type.write(writer)?;
             }
-            OperationKind::Extract {
+            OperationKind::Replicate {
+                input_type,
+                result_type,
+                ..
+            }
+            | OperationKind::Extract {
                 input_type,
                 result_type,
                 ..

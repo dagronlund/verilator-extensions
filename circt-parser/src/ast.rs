@@ -290,6 +290,11 @@ pub enum OperationKind {
         operands: Vec<Value>,
         types: Vec<Type>,
     },
+    Replicate {
+        input: Value,
+        input_type: Type,
+        result_type: Type,
+    },
     Extract {
         input: Value,
         offset: u64,

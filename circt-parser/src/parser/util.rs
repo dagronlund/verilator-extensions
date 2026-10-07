@@ -29,6 +29,7 @@ pub(super) fn supported_operation(name: &str) -> bool {
         | "comb.icmp"
         | "comb.mux"
         | "comb.concat"
+        | "comb.replicate"
         | "comb.extract"
         | "seq.to_clock"
         | "seq.firreg"

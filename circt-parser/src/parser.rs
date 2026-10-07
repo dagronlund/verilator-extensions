@@ -534,6 +534,21 @@ impl Parser {
                 }
                 OperationKind::Concat { operands, types }
             }
+            "comb.replicate" => {
+                let input = Value::parse(self)?;
+                *attributes = self.attributes()?;
+                self.expect(":")?;
+                self.expect("(")?;
+                let input_type = Type::parse(self)?;
+                self.expect(")")?;
+                self.expect("->")?;
+                let result_type = Type::parse(self)?;
+                OperationKind::Replicate {
+                    input,
+                    input_type,
+                    result_type,
+                }
+            }
             "comb.extract" => {
                 let input = Value::parse(self)?;
                 self.expect("from")?;
