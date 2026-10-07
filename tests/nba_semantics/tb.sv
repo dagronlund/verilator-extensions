@@ -48,6 +48,7 @@ module nba_semantics (
     end
 
     // Separate dynamic-address writers own disjoint bits of the same memory.
+`ifdef VERILATOR
     always @(posedge clk) begin
         if (!reset_n) begin
             lanes[0][3:0] <= 0;
@@ -60,6 +61,19 @@ module nba_semantics (
             lanes[1][7:4] <= 0;
         end else if (enable) lanes[index][7:4] <= data[7:4];
     end
+`else
+    always_ff @(posedge clk) begin
+        if (!reset_n) begin
+            lanes[0][3:0] <= 0;
+            lanes[1][3:0] <= 0;
+        end else if (enable) lanes[index][3:0] <= data[3:0];
+        if (!reset_n) begin
+            lanes[0][7:4] <= 0;
+            lanes[1][7:4] <= 0;
+        end else if (enable) lanes[index][7:4] <= data[7:4];
+    end
+
+`endif
 
     assert_pipeline: assert property (@(posedge clk) disable iff (!reset_n)
         enable |=> pipeline == $past(a));

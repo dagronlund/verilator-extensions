@@ -158,6 +158,61 @@ fn constants_preserve_arbitrary_precision_and_spelling() {
 }
 
 #[test]
+fn aggregate_constants_preserve_nested_values_types_and_annotations() {
+    let huge = "9".repeat(100);
+    let source = format!(
+        r#"hw.module @aggregates() {{
+        %record = hw.aggregate_constant [[0xA : i4, -1 : i4], true] {{sv.namehint = "record"}} : !hw.struct<data: !hw.array<2xi4>, enabled: i1> loc("constant.sv":2:3)
+        %wide = hw.aggregate_constant [{huge} : i512, -1 : i512] : !hw.array<2xi512>
+        hw.output
+    }}"#
+    );
+    let file = parse(7, &source).unwrap();
+    let Item::HwModule(module) = &file.items[0] else {
+        panic!()
+    };
+    let body = module.body.as_ref().unwrap();
+    let OperationKind::AggregateConstant { fields, ty } = &body[0].kind else {
+        panic!()
+    };
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[1], AttributeValue::Boolean(true));
+    let AttributeValue::Array(values) = &fields[0] else {
+        panic!()
+    };
+    for (value, spelling) in values.into_iter().zip([b"0xA".as_slice(), b"-1"]) {
+        let AttributeValue::Integer { value, ty } = value else {
+            panic!()
+        };
+        assert_eq!(value.spelling.as_ref(), spelling);
+        assert_eq!(*ty, Some(integer(4)));
+    }
+    let Type::Struct(members) = ty else { panic!() };
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[1].ty, integer(1));
+    assert_eq!(body[0].attributes.len(), 1);
+    assert_eq!(
+        body[0].location.as_ref().unwrap().spelling.as_ref(),
+        br#"loc("constant.sv":2:3)"#
+    );
+    let OperationKind::AggregateConstant { fields, .. } = &body[1].kind else {
+        panic!()
+    };
+    let AttributeValue::Integer { value, .. } = &fields[0] else {
+        panic!()
+    };
+    assert_eq!(value.spelling.as_ref(), huge.as_bytes());
+    let tokens = Lexer::new(7, &source)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .into_iter()
+        .filter(|token| !token.kind.is_whitespace())
+        .collect::<Vec<_>>();
+    assert_tokens_equal(&tokens, write(7, &file).unwrap().tokens());
+    assert_round_trip(&file, 8);
+}
+
+#[test]
 fn grouped_instance_results_and_forward_ssa_references() {
     let module = hw_module(
         r#"hw.module @parent(in %clk: i1, out y: i4) {
@@ -589,6 +644,10 @@ fn malformed_and_unsupported_assembly_is_rejected() {
         "hw.module @m(in %a: !hw.array<18446744073709551616xi4>) {}",
         "hw.module @m() { %r = hw.constant 1 }",
         "hw.module @m() { %r = hw.constant true : i1 }",
+        "hw.module @m() { %r = hw.aggregate_constant [0 : i8] }",
+        "hw.module @m() { %r = hw.aggregate_constant {0 : i8} : !hw.array<1xi8> }",
+        "hw.module @m() { %r = hw.aggregate_constant [0 : i8 1 : i8] : !hw.array<2xi8> }",
+        "hw.module @m() { %r = hw.aggregate_constant [[0 : i8] : !hw.array<1xi8> }",
         "hw.module @m() { %r = hw.constant 1 {test.flag} : i4 }",
         "hw.module @m() { hw.constant true }",
         "hw.module @m() { %r = hw.output }",

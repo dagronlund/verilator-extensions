@@ -9,8 +9,8 @@ use formal_utils::{
 };
 use parser_circt::{
     ast::{
-        ClockEdge, CombOperator, ComparisonPredicate, ConstantValue, File, OperationKind,
-        PropertyKind, ResetKind,
+        AttributeValue, ClockEdge, CombOperator, ComparisonPredicate, ConstantValue, File,
+        OperationKind, PropertyKind, ResetKind,
     },
     parser::parse,
 };
@@ -458,6 +458,24 @@ impl Converter {
                                 .map_err(|err| node.error(err.message))?
                         }
                     },
+                    OperationKind::AggregateConstant { fields, .. } => {
+                        let mut bits = Vec::new();
+                        for (field, width) in node.ty.aggregate_constant_fields(fields)? {
+                            match field {
+                                AttributeValue::Boolean(value) => {
+                                    bits.push(Value::Constant(*value))
+                                }
+                                AttributeValue::Integer { value, .. } => {
+                                    bits.extend(
+                                        constant(&value.spelling, width)
+                                            .map_err(|err| node.error(err.message))?,
+                                    );
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        bits
+                    }
                     OperationKind::Comb { operator, .. } => {
                         let mut result = values[0].clone();
                         for rhs in &values[1..] {

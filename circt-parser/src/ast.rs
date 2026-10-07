@@ -252,6 +252,10 @@ pub enum OperationKind {
         value: ConstantValue,
         ty: Type,
     },
+    AggregateConstant {
+        fields: Vec<AttributeValue>,
+        ty: Type,
+    },
     Output {
         values: Vec<Value>,
         types: Vec<Type>,

@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use parser_circt::lexer::position::LexerPosition;
 
 use parser_circt::ast::{
-    ClockEdge, CombOperator, ConstantValue, File, HwModule, Item, Name, Operation, OperationKind,
-    PortDirection, Signedness, Type, Value, Visibility,
+    AttributeValue, ClockEdge, CombOperator, ConstantValue, File, HwModule, Item, Name, Operation,
+    OperationKind, PortDirection, Signedness, Type, Value, Visibility,
 };
 
 use crate::{convert::ConversionOptions, error::ConvertError};
@@ -88,6 +88,64 @@ impl Ty {
 
     pub fn is_bit(&self) -> bool {
         *self == bit_type()
+    }
+
+    /// Validate the nested attribute layout and return integer leaves LSB-first.
+    pub fn aggregate_constant_fields<'a>(
+        &self,
+        fields: &'a [AttributeValue],
+    ) -> Result<Vec<(&'a AttributeValue, usize)>, ConvertError> {
+        let types = match self {
+            Self::Array(size, element) if *size == fields.len() => {
+                vec![element.as_ref(); fields.len()]
+            }
+            Self::Struct(members) if members.len() == fields.len() => {
+                members.into_iter().map(|(_, ty)| ty).collect()
+            }
+            Self::Array(_, _) | Self::Struct(_) => {
+                return Err(ConvertError::message(
+                    "aggregate constant field count mismatch",
+                ));
+            }
+            _ => {
+                return Err(ConvertError::message(
+                    "aggregate constant requires an array or struct type",
+                ));
+            }
+        };
+        let mut leaves = Vec::new();
+        for (field, ty) in fields.into_iter().zip(types).rev() {
+            match (field, ty) {
+                (AttributeValue::Array(fields), _) => {
+                    leaves.extend(ty.aggregate_constant_fields(fields)?);
+                }
+                (AttributeValue::Boolean(_), Self::Integer(1, _)) => leaves.push((field, 1)),
+                (AttributeValue::Integer { ty: declared, .. }, Self::Integer(width, _)) => {
+                    let declared_width = match declared {
+                        Some(Type::Integer { width, .. }) => *width as usize,
+                        // MLIR integer attributes without a type default to i64.
+                        None => 64,
+                        _ => {
+                            return Err(ConvertError::message(
+                                "aggregate constant requires integer leaf attributes",
+                            ));
+                        }
+                    };
+                    if declared_width != *width {
+                        return Err(ConvertError::message(
+                            "aggregate constant literal width mismatch",
+                        ));
+                    }
+                    leaves.push((field, *width));
+                }
+                _ => {
+                    return Err(ConvertError::message(
+                        "aggregate constant field kind/type mismatch",
+                    ));
+                }
+            }
+        }
+        Ok(leaves)
     }
 
     pub fn union_field(&self, field: &str) -> Result<(&Ty, usize), ConvertError> {
@@ -840,6 +898,9 @@ impl Graph {
             OperationKind::Constant { .. } if !matches_integer(&node.ty) => {
                 return Err(fail("constant must have integer type"));
             }
+            OperationKind::AggregateConstant { fields, .. } => {
+                node.ty.aggregate_constant_fields(fields)?;
+            }
             OperationKind::Comb { operator, .. } => {
                 let variadic = [
                     CombOperator::Add,
@@ -1089,6 +1150,7 @@ fn matches_integer(ty: &Ty) -> bool {
 fn result_types(kind: &OperationKind) -> Result<Vec<Ty>, ConvertError> {
     let ty = match kind {
         OperationKind::Constant { ty, .. }
+        | OperationKind::AggregateConstant { ty, .. }
         | OperationKind::Comb { ty, .. }
         | OperationKind::Mux { ty, .. }
         | OperationKind::FirReg { ty, .. }
@@ -1135,7 +1197,7 @@ fn result_types(kind: &OperationKind) -> Result<Vec<Ty>, ConvertError> {
 
 fn operands(kind: &OperationKind) -> Vec<&Value> {
     match kind {
-        OperationKind::Constant { .. } => Vec::new(),
+        OperationKind::Constant { .. } | OperationKind::AggregateConstant { .. } => Vec::new(),
         OperationKind::Output { values, .. } => values.into_iter().collect(),
         OperationKind::Instance { inputs, .. } => {
             inputs.into_iter().map(|input| &input.value).collect()

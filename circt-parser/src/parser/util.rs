@@ -22,6 +22,7 @@ pub(super) fn comb_operator(name: &str) -> Option<CombOperator> {
 pub(super) fn supported_operation(name: &str) -> bool {
     match name {
         "hw.constant"
+        | "hw.aggregate_constant"
         | "hw.output"
         | "hw.instance"
         | "hw.bitcast"

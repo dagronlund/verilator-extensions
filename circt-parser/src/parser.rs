@@ -433,6 +433,11 @@ impl Parser {
                 *attributes = self.attributes()?;
                 OperationKind::Constant { value, ty }
             }
+            "hw.aggregate_constant" => {
+                let fields = self.group("[", "]", AttributeValue::parse)?;
+                let ty = self.typed(attributes)?;
+                OperationKind::AggregateConstant { fields, ty }
+            }
             "hw.output" => {
                 let values = if self.at_kind(LexerTokenKind::ValueIdentifier) {
                     self.separated::<Value>()?

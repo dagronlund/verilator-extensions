@@ -532,6 +532,10 @@ impl WriterNode for Operation {
                     }
                 }
             }
+            OperationKind::AggregateConstant { fields, .. } => {
+                writer.keyword("hw.aggregate_constant");
+                writer.group("[", fields, "]")?;
+            }
             OperationKind::Output { values, .. } => {
                 writer.keyword("hw.output");
                 writer.list(values)?;
@@ -714,7 +718,8 @@ impl WriterNode for Operation {
         }
         writer.attributes(&self.attributes)?;
         match &self.kind {
-            OperationKind::Comb { ty, .. }
+            OperationKind::AggregateConstant { ty, .. }
+            | OperationKind::Comb { ty, .. }
             | OperationKind::Compare { ty, .. }
             | OperationKind::Mux { ty, .. }
             | OperationKind::FirReg { ty, .. }

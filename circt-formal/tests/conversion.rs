@@ -718,8 +718,134 @@ fn union_extraction_uses_overlapping_storage_and_member_offsets() {
 }
 
 #[test]
+fn aggregate_constants_follow_circt_list_order_and_reset_register_arrays() {
+    let model = source(
+        r#"hw.module @m(in %clk: i1, in %rst: i1, out array: !hw.array<2xi4>, out matrix: !hw.array<2xarray<2xi4>>, out record: !hw.struct<data: !hw.array<2xi4>, enabled: i1, pair: !hw.struct<a: i4, b: i4>>, out low: i4, out row: i8, out q: i8) {
+        %array = hw.aggregate_constant [0xa : i4, 0xb : i4] : !hw.array<2xi4>
+        %matrix = hw.aggregate_constant [[1 : i4, 2 : i4], [3 : i4, 4 : i4]] : !hw.array<2xarray<2xi4>>
+        %record = hw.aggregate_constant [[0xa : i4, 0xb : i4], true, [-1 : si4, 2 : ui4]] : !hw.struct<data: !hw.array<2xi4>, enabled: i1, pair: !hw.struct<a: i4, b: i4>>
+        %false = hw.constant false
+        %low = hw.array_get %array[%false] : !hw.array<2xi4>, i1
+        %row = hw.array_get %matrix[%false] : !hw.array<2xarray<2xi4>>, i1
+        %row_bits = hw.bitcast %row : (!hw.array<2xi4>) -> i8
+        %zero = hw.aggregate_constant [0 : i4, 0 : i4] : !hw.array<2xi4>
+        %clock = seq.to_clock %clk
+        %q = seq.firreg %array clock %clock reset sync %rst, %zero : !hw.array<2xi4>
+        %q_bits = hw.bitcast %q : (!hw.array<2xi4>) -> i8
+        hw.output %array, %matrix, %record, %low, %row_bits, %q_bits : !hw.array<2xi4>, !hw.array<2xarray<2xi4>>, !hw.struct<data: !hw.array<2xi4>, enabled: i1, pair: !hw.struct<a: i4, b: i4>>, i4, i8, i8
+    }"#,
+    );
+    model.fsm.verify(VerifyOrdering::Verify);
+    let mut sim = simulator(&model);
+    sim.eval();
+    for (name, expected) in [
+        ("array", 0xab),
+        ("matrix", 0x1234),
+        ("record", 0x157f2),
+        ("low", 0xb),
+        ("row", 0x34),
+    ] {
+        assert_eq!(output(&model, &sim, name), expected);
+    }
+    for signal in &model.outputs[..3] {
+        for bit in &signal.bits {
+            assert!(bit.value.is_constant());
+        }
+    }
+    set(&model, &mut sim, "rst", 1);
+    tick(&mut sim);
+    assert_eq!(output(&model, &sim, "q"), 0);
+    set(&model, &mut sim, "rst", 0);
+    tick(&mut sim);
+    assert_eq!(output(&model, &sim, "q"), 0xab);
+    for format in [AigerFormat::Ascii, AigerFormat::Binary] {
+        let bytes = export::write(&model.fsm, format, &ExportOptions::default()).unwrap();
+        let (fsm, _) = match format {
+            AigerFormat::Ascii => read_aiger_ascii(&bytes),
+            AigerFormat::Binary => read_aiger_binary(&bytes),
+        };
+        let mut sim = Simulator::from(fsm);
+        sim.eval();
+        let mut index = 0;
+        for (width, expected) in [(8, 0xabu64), (16, 0x1234), (17, 0x157f2)] {
+            for bit in 0..width {
+                assert_eq!(sim.get_output(index), Some(expected & (1 << bit) != 0));
+                index += 1;
+            }
+        }
+    }
+}
+
+#[test]
+fn aggregate_constants_preserve_wide_signed_and_default_integer_literals() {
+    let model = source(
+        r#"hw.module @m(in %clk: i1, out wide: !hw.array<2xi256>, out defaults: !hw.array<2xi64>, out booleans: !hw.array<3xi1>) {
+        %wide = hw.aggregate_constant [340282366920938463463374607431768211457 : i256, -1 : i256] : !hw.array<2xi256>
+        %defaults = hw.aggregate_constant [1, -2] : !hw.array<2xi64>
+        %booleans = hw.aggregate_constant [true, false, true] : !hw.array<3xi1>
+        hw.output %wide, %defaults, %booleans : !hw.array<2xi256>, !hw.array<2xi64>, !hw.array<3xi1>
+    }"#,
+    );
+    let mut sim = simulator(&model);
+    sim.eval();
+    for bit in &model.outputs[0].bits {
+        assert_eq!(
+            sim.get_value_signed(bit.value),
+            Some(bit.index < 256 || bit.index == 256 || bit.index == 384)
+        );
+    }
+    for bit in &model.outputs[1].bits {
+        assert_eq!(
+            sim.get_value_signed(bit.value),
+            Some((bit.index > 0 && bit.index < 64) || bit.index == 64)
+        );
+    }
+    assert_eq!(output(&model, &sim, "booleans"), 5);
+}
+
+#[test]
 fn malformed_graphs_return_positioned_errors() {
     let cases = [
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [1 : i4] : i4 hw.output }",
+            "requires an array or struct",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [1 : i4] : !hw.array<2xi4> hw.output }",
+            "field count mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [1 : i4, 2 : i4] : !hw.struct<a: i4> hw.output }",
+            "field count mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [[1 : i4]] : !hw.array<1xarray<2xi4>> hw.output }",
+            "field count mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [1 : i4] : !hw.array<1xi8> hw.output }",
+            "literal width mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [1] : !hw.array<1xi4> hw.output }",
+            "literal width mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [true] : !hw.array<1xi4> hw.output }",
+            "field kind/type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [\"bad\"] : !hw.array<1xi8> hw.output }",
+            "field kind/type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [1 : i4] : !hw.array<1xarray<1xi4>> hw.output }",
+            "field kind/type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [[1 : i4]] : !hw.array<1xi4> hw.output }",
+            "requires an array or struct",
+        ),
         (
             "hw.module @m(in %clk: i1) { %a = comb.xor %b, %b : i1 %b = comb.xor %a, %a : i1 hw.output }",
             "cycle",
