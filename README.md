@@ -86,7 +86,8 @@ formatting; comments and whitespace outside retained literal and location
 spellings are not part of the AST.
 
 The parser supports `module`/`builtin.module`, `hw.module`, `hw.module.extern`,
-`hw.constant`, `hw.instance`, `hw.output`, `hw.array_get`, and `hw.array_inject`.
+`hw.constant`, `hw.instance`, `hw.output`, `hw.bitcast`, `hw.array_get`, and
+`hw.array_inject`.
 It also handles the formal-core fixtures' comb arithmetic, logic, comparisons,
 muxes, concatenations, replications and extracts; `seq.to_clock`, `seq.firreg`, and
 `seq.compreg`; and clocked verif assertions, assumptions, and covers. Types
@@ -326,7 +327,8 @@ To generate fresh input, use the `circt-verilog --ir-hw` frontend followed by
 inference with `--detect-memories=false` to retain register arrays. The converter
 accepts the parser's binary formal-core subset, including forward SSA references,
 grouped instance results, nested instances, fixed-width integers, arrays, packed
-struct passthrough, arithmetic/comparisons, dynamic array reads and injection,
+struct passthrough, equal-width bitcasts between integers, arrays, and structs,
+arithmetic/comparisons, dynamic array reads and injection,
 `seq.firreg`, `seq.compreg`, and clocked assertions, assumptions, and covers.
 CIRCT has already lowered procedural and temporal semantics into this graph.
 

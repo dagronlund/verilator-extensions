@@ -580,6 +580,10 @@ impl WriterNode for Operation {
                 writer.keyword("comb.concat");
                 writer.list(operands)?;
             }
+            OperationKind::Bitcast { input, .. } => {
+                writer.keyword("hw.bitcast");
+                input.write(writer)?;
+            }
             OperationKind::Replicate { input, .. } => {
                 writer.keyword("comb.replicate");
                 input.write(writer)?;
@@ -705,7 +709,12 @@ impl WriterNode for Operation {
                 writer.symbol(",");
                 index_type.write(writer)?;
             }
-            OperationKind::Replicate {
+            OperationKind::Bitcast {
+                input_type,
+                result_type,
+                ..
+            }
+            | OperationKind::Replicate {
                 input_type,
                 result_type,
                 ..

@@ -256,6 +256,68 @@ fn arrays_muxes_concat_extract_and_attributes() {
 }
 
 #[test]
+fn bitcast_preserves_types_attributes_locations_and_round_trips() {
+    let source = r#"hw.module @bitcast(in %bits: i8, out y: i8) {
+        %array = hw.bitcast %bits {sv.namehint = "array", test.flag} : (i8) -> !hw.array<2xi4> loc("bitcast.sv":4:5)
+        %record = hw.bitcast %array : (!hw.array<2xi4>) -> !hw.struct<hi: i4, lo: i4>
+        %result = hw.bitcast %record : (!hw.struct<hi: i4, lo: i4>) -> i8
+        hw.output %result : i8
+    }"#;
+    let file = parse(7, source).unwrap();
+    let Item::HwModule(module) = &file.items[0] else {
+        panic!()
+    };
+    let body = module.body.as_ref().unwrap();
+    let OperationKind::Bitcast {
+        input,
+        input_type,
+        result_type,
+    } = &body[0].kind
+    else {
+        panic!()
+    };
+    assert_eq!(input.name.spelling.as_ref(), b"%bits");
+    assert_eq!(*input_type, integer(8));
+    assert_eq!(
+        *result_type,
+        Type::Array {
+            size: 2,
+            element: Box::new(integer(4)),
+        }
+    );
+    let OperationKind::Bitcast {
+        input_type: array_type,
+        result_type: struct_type,
+        ..
+    } = &body[1].kind
+    else {
+        panic!()
+    };
+    assert_eq!(array_type, result_type);
+    let Type::Struct(fields) = struct_type else {
+        panic!()
+    };
+    assert_eq!(fields[0].name.spelling.as_ref(), b"hi");
+    assert_eq!(fields[1].name.spelling.as_ref(), b"lo");
+    assert_eq!(fields[0].ty, integer(4));
+    assert_eq!(fields[1].ty, integer(4));
+    assert_eq!(body[0].attributes.len(), 2);
+    assert_eq!(
+        body[0].location.as_ref().unwrap().spelling.as_ref(),
+        br#"loc("bitcast.sv":4:5)"#
+    );
+    assert!(source[body[0].position.range()].starts_with("%array = hw.bitcast"));
+    let tokens = Lexer::new(7, source)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .into_iter()
+        .filter(|token| !token.kind.is_whitespace())
+        .collect::<Vec<_>>();
+    assert_tokens_equal(&tokens, write(7, &file).unwrap().tokens());
+    assert_round_trip(&file, 8);
+}
+
+#[test]
 fn replicate_preserves_types_attributes_locations_and_round_trips() {
     let source = r#"hw.module @replicate(in %a: i3, in %b: i1, out y: i9) {
         %r = comb.replicate %a {sv.namehint = "repeated", test.flag} : (i3) -> i9 loc("replicate.sv":4:5)
@@ -474,6 +536,11 @@ fn malformed_and_unsupported_assembly_is_rejected() {
         "hw.module @m() { %r = comb.sub %a, %b, %c : i4 }",
         "hw.module @m() { %r = comb.add %a, : i4 }",
         "hw.module @m() { %r = comb.concat %a, %b : i4 }",
+        "hw.module @m() { %r = hw.bitcast %a, %b : (i4) -> i4 }",
+        "hw.module @m() { %r = hw.bitcast %a : i4 -> i4 }",
+        "hw.module @m() { %r = hw.bitcast %a : (i4, i4) -> i8 }",
+        "hw.module @m() { %r = hw.bitcast %a : (i4) i4 }",
+        "hw.module @m() { %r = hw.bitcast %a : (i4) -> i0 }",
         "hw.module @m() { %r = comb.replicate %a, %b : (i4) -> i8 }",
         "hw.module @m() { %r = comb.replicate %a : i4 -> i8 }",
         "hw.module @m() { %r = comb.replicate %a : (i4, i4) -> i8 }",

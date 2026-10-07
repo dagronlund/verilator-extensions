@@ -253,6 +253,11 @@ pub enum OperationKind {
         inputs: Vec<InstanceInput>,
         outputs: Vec<TypeField>,
     },
+    Bitcast {
+        input: Value,
+        input_type: Type,
+        result_type: Type,
+    },
     ArrayGet {
         array: Value,
         index: Value,

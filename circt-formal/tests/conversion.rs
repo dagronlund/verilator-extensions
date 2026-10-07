@@ -596,6 +596,68 @@ fn replication_repeats_lsb_first_bits_without_extra_logic() {
 }
 
 #[test]
+fn bitcasts_preserve_bits_through_nested_aggregates_and_signedness() {
+    let model = source(
+        r#"hw.module @m(in %clk: i1, in %bits: i12, in %record: !hw.struct<hi: i4, lo: !hw.array<2xi4>>, out packed: !hw.struct<hi: i4, lo: !hw.array<2xi4>>, out restored: i12, out record_bits: i12, out signed_bits: si12, out row: i6, out cell: i2) {
+        %restored = hw.bitcast %packed : (!hw.struct<hi: i4, lo: !hw.array<2xi4>>) -> i12
+        %packed = hw.bitcast %bits : (i12) -> !hw.struct<hi: i4, lo: !hw.array<2xi4>>
+        %record_bits = hw.bitcast %record : (!hw.struct<hi: i4, lo: !hw.array<2xi4>>) -> i12
+        %signed_bits = hw.bitcast %restored : (i12) -> si12
+        %matrix = hw.bitcast %packed : (!hw.struct<hi: i4, lo: !hw.array<2xi4>>) -> !hw.array<2xarray<3xi2>>
+        %one = hw.constant 1 : i1
+        %two = hw.constant 2 : i2
+        %row = hw.array_get %matrix[%one] : !hw.array<2xarray<3xi2>>, i1
+        %row_bits = hw.bitcast %row : (!hw.array<3xi2>) -> i6
+        %cell = hw.array_get %row[%two] : !hw.array<3xi2>, i2
+        hw.output %packed, %restored, %record_bits, %signed_bits, %row_bits, %cell : !hw.struct<hi: i4, lo: !hw.array<2xi4>>, i12, i12, si12, i6, i2
+    }"#,
+    );
+    model.fsm.verify(VerifyOrdering::Verify);
+    let mut sim = simulator(&model);
+    for bits in [0, 1, 0x123, 0xabc, 0xfff] {
+        set(&model, &mut sim, "bits", bits);
+        set(&model, &mut sim, "record", bits ^ 0xfff);
+        sim.eval();
+        for name in ["packed", "restored", "signed_bits"] {
+            assert_eq!(output(&model, &sim, name), bits);
+        }
+        assert_eq!(output(&model, &sim, "record_bits"), bits ^ 0xfff);
+        assert_eq!(output(&model, &sim, "row"), bits >> 6);
+        assert_eq!(output(&model, &sim, "cell"), bits >> 10);
+    }
+    for (result_index, input_index) in [(0, 0), (1, 0), (2, 1), (3, 0)] {
+        for (result, input) in (&model.outputs[result_index].bits)
+            .into_iter()
+            .zip(&model.inputs[input_index].bits)
+        {
+            assert_eq!(result.value, input.value);
+        }
+    }
+}
+
+#[test]
+fn bitcasts_preserve_arbitrary_width_values() {
+    let model = source(
+        r#"hw.module @m(in %clk: i1, out array: !hw.array<2xi128>, out restored: i256) {
+        %value = hw.constant 340282366920938463463374607431768211457 : i256
+        %array = hw.bitcast %value : (i256) -> !hw.array<2xi128>
+        %restored = hw.bitcast %array : (!hw.array<2xi128>) -> i256
+        hw.output %array, %restored : !hw.array<2xi128>, i256
+    }"#,
+    );
+    let mut sim = simulator(&model);
+    sim.eval();
+    for signal in &model.outputs {
+        for bit in &signal.bits {
+            assert_eq!(
+                sim.get_value_signed(bit.value),
+                Some(bit.index == 0 || bit.index == 128)
+            );
+        }
+    }
+}
+
+#[test]
 fn malformed_graphs_return_positioned_errors() {
     let cases = [
         (
@@ -637,6 +699,30 @@ fn malformed_graphs_return_positioned_errors() {
         (
             "hw.module @m(in %clk: i1, in %a: i4) { %b = comb.replicate %a : (i4) -> !hw.array<2xi4> hw.output }",
             "type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i4) { %b = hw.bitcast %a : (i4) -> i8 hw.output }",
+            "width mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: !hw.array<2xi4>) { %b = hw.bitcast %a : (!hw.array<2xi4>) -> !hw.struct<hi: i4, lo: i2> hw.output }",
+            "width mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i8) { %b = hw.bitcast %a : (!hw.array<2xi4>) -> i8 hw.output }",
+            "operand type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i4) { %b = hw.bitcast %a : (i4) -> !seq.clock hw.output }",
+            "clock used as data",
+        ),
+        (
+            "hw.module @m(in %clk: !seq.clock) { %b = hw.bitcast %clk : (!seq.clock) -> i1 hw.output }",
+            "clock used as data",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %b = hw.bitcast %clk : (i1) -> i1 hw.output }",
+            "clock used as ordinary data",
         ),
         (
             "hw.module @m(in %clk: i1, out o: i4) { hw.output %clk : i1 }",

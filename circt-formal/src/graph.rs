@@ -847,6 +847,14 @@ impl Graph {
                     }
                 }
             }
+            OperationKind::Bitcast { input_type, .. } => {
+                if *types[0] != Ty::parse(input_type)? {
+                    return Err(fail("bitcast operand type mismatch"));
+                }
+                if types[0].width()? != node.ty.width()? {
+                    return Err(fail("bitcast input/result width mismatch"));
+                }
+            }
             OperationKind::Replicate { input_type, .. } => {
                 if !matches_integer(&node.ty)
                     || !matches_integer(types[0])
@@ -1042,7 +1050,8 @@ fn result_types(kind: &OperationKind) -> Result<Vec<Ty>, ConvertError> {
         | OperationKind::CompReg { ty, .. } => Ty::parse(ty)?,
         OperationKind::Compare { .. } => bit_type(),
         OperationKind::ToClock { .. } => Ty::Clock,
-        OperationKind::Replicate { result_type, .. }
+        OperationKind::Bitcast { result_type, .. }
+        | OperationKind::Replicate { result_type, .. }
         | OperationKind::Extract { result_type, .. } => Ty::parse(result_type)?,
         OperationKind::ArrayInject { array_type, .. } => Ty::parse(array_type)?,
         OperationKind::ArrayGet { array_type, .. } => match Ty::parse(array_type)? {
@@ -1097,7 +1106,8 @@ fn operands(kind: &OperationKind) -> Vec<&Value> {
             false_value,
             ..
         } => vec![condition, true_value, false_value],
-        OperationKind::Replicate { input, .. }
+        OperationKind::Bitcast { input, .. }
+        | OperationKind::Replicate { input, .. }
         | OperationKind::Extract { input, .. }
         | OperationKind::ToClock { input } => vec![input],
         OperationKind::FirReg {

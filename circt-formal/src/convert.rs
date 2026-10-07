@@ -555,6 +555,7 @@ impl Converter {
                     OperationKind::Mux { .. } => {
                         self.fsm.create_mux(&values[2], &values[1], values[0][0])
                     }
+                    OperationKind::Bitcast { .. } => values[0].clone(),
                     OperationKind::Concat { .. } => values.into_iter().rev().flatten().collect(),
                     OperationKind::Replicate { .. } => {
                         values[0].repeat(node.ty.width()? / values[0].len())
