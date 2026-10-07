@@ -253,6 +253,80 @@ fn grouped_instance_results_and_forward_ssa_references() {
 }
 
 #[test]
+fn array_creation_preserves_operands_element_and_optional_result_types() {
+    let source = r#"hw.module @arrays(in %a: i4, in %b: i4) {
+        %array = hw.array_create %a, %b {sv.namehint = "array"} : i4 loc("array.sv":2:3)
+        %matrix = hw.array_create %array, %array : !hw.array<2xi4> -> !hw.array<2xarray<2xi4>>
+        %singleton = hw.array_create %a : i4 -> !ArrayAlias
+        hw.output
+    }"#;
+    let file = parse(7, source).unwrap();
+    let Item::HwModule(module) = &file.items[0] else {
+        panic!()
+    };
+    let body = module.body.as_ref().unwrap();
+    let OperationKind::ArrayCreate {
+        operands,
+        element_type,
+        result_type,
+    } = &body[0].kind
+    else {
+        panic!()
+    };
+    assert_eq!(operands.len(), 2);
+    assert_eq!(operands[0].name.spelling.as_ref(), b"%a");
+    assert_eq!(operands[1].name.spelling.as_ref(), b"%b");
+    assert_eq!(*element_type, integer(4));
+    assert_eq!(*result_type, None);
+    assert_eq!(body[0].attributes.len(), 1);
+    assert_eq!(
+        body[0].location.as_ref().unwrap().spelling.as_ref(),
+        br#"loc("array.sv":2:3)"#
+    );
+    let array_type = Type::Array {
+        size: 2,
+        element: Box::new(integer(4)),
+    };
+    let OperationKind::ArrayCreate {
+        element_type,
+        result_type,
+        ..
+    } = &body[1].kind
+    else {
+        panic!()
+    };
+    assert_eq!(*element_type, array_type);
+    assert_eq!(
+        *result_type,
+        Some(Type::Array {
+            size: 2,
+            element: Box::new(array_type)
+        })
+    );
+    let OperationKind::ArrayCreate {
+        operands,
+        result_type,
+        ..
+    } = &body[2].kind
+    else {
+        panic!()
+    };
+    assert_eq!(operands.len(), 1);
+    let Some(Type::Alias(name)) = result_type else {
+        panic!()
+    };
+    assert_eq!(name.spelling.as_ref(), b"!ArrayAlias");
+    let tokens = Lexer::new(7, source)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .into_iter()
+        .filter(|token| !token.kind.is_whitespace())
+        .collect::<Vec<_>>();
+    assert_tokens_equal(&tokens, write(7, &file).unwrap().tokens());
+    assert_round_trip(&file, 8);
+}
+
+#[test]
 fn arrays_muxes_concat_extract_and_attributes() {
     let source = r#"hw.module @array(in %idx: i1, in %data: i4) {
         %get = hw.array_get %memory[%idx] : !hw.array<2xi4>, i1
@@ -657,6 +731,10 @@ fn malformed_and_unsupported_assembly_is_rejected() {
         "hw.module @m() { %r = comb.sub %a, %b, %c : i4 }",
         "hw.module @m() { %r = comb.add %a, : i4 }",
         "hw.module @m() { %r = comb.concat %a, %b : i4 }",
+        "hw.module @m() { %r = hw.array_create : i4 }",
+        "hw.module @m() { %r = hw.array_create %a, : i4 }",
+        "hw.module @m() { %r = hw.array_create %a }",
+        "hw.module @m() { %r = hw.array_create %a : i4 -> }",
         "hw.module @m() { %r = hw.bitcast %a, %b : (i4) -> i4 }",
         "hw.module @m() { %r = hw.bitcast %a : i4 -> i4 }",
         "hw.module @m() { %r = hw.bitcast %a : (i4, i4) -> i8 }",
@@ -784,6 +862,11 @@ fn parser_round_trips_mlir(path: impl AsRef<Path>) {
     }
     assert_eq!(modules.len(), expected_modules, "{}", path.display());
     assert_eq!(operations, expected_operations, "{}", path.display());
+}
+
+#[test]
+fn fixture_nba_semantics() {
+    parser_round_trips_mlir("res/nba_semantics.hw.mlir");
 }
 
 #[test]

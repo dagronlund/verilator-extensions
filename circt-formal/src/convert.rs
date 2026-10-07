@@ -581,7 +581,9 @@ impl Converter {
                         values[0][offset..offset + member.width()?].to_vec()
                     }
                     OperationKind::Bitcast { .. } => values[0].clone(),
-                    OperationKind::Concat { .. } => values.into_iter().rev().flatten().collect(),
+                    OperationKind::ArrayCreate { .. } | OperationKind::Concat { .. } => {
+                        values.into_iter().rev().flatten().collect()
+                    }
                     OperationKind::Replicate { .. } => {
                         values[0].repeat(node.ty.width()? / values[0].len())
                     }

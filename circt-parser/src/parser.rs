@@ -470,6 +470,20 @@ impl Parser {
                     outputs,
                 }
             }
+            "hw.array_create" => {
+                let operands = self.separated::<Value>()?;
+                let element_type = self.typed(attributes)?;
+                let result_type = if self.optional("->") {
+                    Some(Type::parse(self)?)
+                } else {
+                    None
+                };
+                OperationKind::ArrayCreate {
+                    operands,
+                    element_type,
+                    result_type,
+                }
+            }
             "hw.array_get" | "hw.array_inject" => {
                 let array = Value::parse(self)?;
                 self.expect("[")?;

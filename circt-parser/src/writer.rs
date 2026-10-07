@@ -553,6 +553,10 @@ impl WriterNode for Operation {
                 writer.symbol("->");
                 writer.group("(", outputs, ")")?;
             }
+            OperationKind::ArrayCreate { operands, .. } => {
+                writer.keyword("hw.array_create");
+                writer.list(operands)?;
+            }
             OperationKind::ArrayGet { array, index, .. }
             | OperationKind::ArrayInject { array, index, .. } => {
                 writer.keyword(if let OperationKind::ArrayGet { .. } = &self.kind {
@@ -735,6 +739,17 @@ impl WriterNode for Operation {
             OperationKind::Concat { types, .. } => {
                 writer.symbol(":");
                 writer.list(types)?;
+            }
+            OperationKind::ArrayCreate {
+                element_type,
+                result_type,
+                ..
+            } => {
+                writer.ty(element_type)?;
+                if let Some(result_type) = result_type {
+                    writer.symbol("->");
+                    result_type.write(writer)?;
+                }
             }
             OperationKind::ArrayGet {
                 array_type,

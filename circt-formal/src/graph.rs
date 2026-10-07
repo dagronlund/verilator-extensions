@@ -990,6 +990,19 @@ impl Graph {
                     return Err(fail("extract type/range mismatch"));
                 }
             }
+            OperationKind::ArrayCreate { element_type, .. } => {
+                let Ty::Array(size, element) = &node.ty else {
+                    return Err(fail("array_create result must be an array type"));
+                };
+                if types.len() != *size || types.is_empty() {
+                    return Err(fail("array_create operand/result count mismatch"));
+                }
+                if **element != Ty::parse(element_type)?
+                    || types.into_iter().any(|ty| ty != element.as_ref())
+                {
+                    return Err(fail("array_create operand/element type mismatch"));
+                }
+            }
             OperationKind::ArrayGet {
                 array_type,
                 index_type,
@@ -1166,6 +1179,24 @@ fn result_types(kind: &OperationKind) -> Result<Vec<Ty>, ConvertError> {
         OperationKind::Bitcast { result_type, .. }
         | OperationKind::Replicate { result_type, .. }
         | OperationKind::Extract { result_type, .. } => Ty::parse(result_type)?,
+        OperationKind::ArrayCreate {
+            operands,
+            element_type,
+            result_type,
+        } => {
+            if operands.is_empty() {
+                return Err(ConvertError::message(
+                    "array_create requires at least one operand",
+                ));
+            }
+            if let Some(result_type) = result_type {
+                Ty::parse(result_type)?
+            } else {
+                let ty = Ty::Array(operands.len(), Box::new(Ty::parse(element_type)?));
+                ty.width()?;
+                ty
+            }
+        }
         OperationKind::ArrayInject { array_type, .. } => Ty::parse(array_type)?,
         OperationKind::ArrayGet { array_type, .. } => match Ty::parse(array_type)? {
             Ty::Array(_, element) => *element,
@@ -1209,9 +1240,9 @@ fn operands(kind: &OperationKind) -> Vec<&Value> {
             value,
             ..
         } => vec![array, index, value],
-        OperationKind::Comb { operands, .. } | OperationKind::Concat { operands, .. } => {
-            operands.into_iter().collect()
-        }
+        OperationKind::ArrayCreate { operands, .. }
+        | OperationKind::Comb { operands, .. }
+        | OperationKind::Concat { operands, .. } => operands.into_iter().collect(),
         OperationKind::Compare { lhs, rhs, .. } => vec![lhs, rhs],
         OperationKind::Mux {
             condition,

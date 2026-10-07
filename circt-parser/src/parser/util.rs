@@ -27,6 +27,7 @@ pub(super) fn supported_operation(name: &str) -> bool {
         | "hw.instance"
         | "hw.bitcast"
         | "hw.union_extract"
+        | "hw.array_create"
         | "hw.array_get"
         | "hw.array_inject"
         | "comb.icmp"

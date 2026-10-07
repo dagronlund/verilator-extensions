@@ -276,6 +276,11 @@ pub enum OperationKind {
         field: StringLiteral,
         union_type: Type,
     },
+    ArrayCreate {
+        operands: Vec<Value>,
+        element_type: Type,
+        result_type: Option<Type>,
+    },
     ArrayGet {
         array: Value,
         index: Value,

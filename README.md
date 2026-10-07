@@ -87,7 +87,7 @@ spellings are not part of the AST.
 
 The parser supports `module`/`builtin.module`, `hw.module`, `hw.module.extern`,
 `hw.constant`, `hw.aggregate_constant`, `hw.instance`, `hw.output`, `hw.bitcast`,
-`hw.array_get`, `hw.array_inject`, and `hw.union_extract`.
+`hw.array_create`, `hw.array_get`, `hw.array_inject`, and `hw.union_extract`.
 It also handles the formal-core fixtures' comb arithmetic, logic, comparisons,
 muxes, concatenations, replications and extracts; `seq.to_clock`, `seq.firreg`, and
 `seq.compreg`; and clocked verif assertions, assumptions, and covers. Types
@@ -330,14 +330,15 @@ grouped instance results, nested instances, fixed-width integers, arrays,
 nested array/struct constants with integer or boolean leaves, packed
 struct and union passthrough, union member extraction, equal-width bitcasts
 between integers, arrays, structs, and unions,
-arithmetic/comparisons, dynamic array reads and injection,
+arithmetic/comparisons, array creation, dynamic array reads and injection,
 `seq.firreg`, `seq.compreg`, and clocked assertions, assumptions, and covers.
 CIRCT has already lowered procedural and temporal semantics into this graph.
 
 Bits are LSB-first, array element zero is the least-significant slice, and the
 first declared struct field/concatenation operand is most significant.
 Aggregate constant lists are most-significant first at every nesting level;
-their last array element occupies index zero.
+their last array element occupies index zero. Array creation uses the same
+ordering, with its last operand at index zero.
 Union members overlap at their declared bit offsets (zero when omitted); the
 union width is the largest member endpoint (offset plus width). Arithmetic
 uses explicit widths and operation signedness, without implicit resizing.

@@ -113,6 +113,26 @@ fn check_fixture(name: &str) {
 }
 
 #[test]
+fn nba_semantics() {
+    check_fixture("nba_semantics");
+    let model = fixture("nba_semantics", true);
+    let mut sim = simulator(&model);
+    sim.eval();
+    assert_eq!(output(&model, &sim, "lane0"), 0);
+    assert_eq!(output(&model, &sim, "lane1"), 0);
+    set(&model, &mut sim, "enable", 1);
+    set(&model, &mut sim, "data", 0xab);
+    tick(&mut sim);
+    assert_eq!(output(&model, &sim, "lane0"), 0xab);
+    assert_eq!(output(&model, &sim, "lane1"), 0);
+    set(&model, &mut sim, "index", 1);
+    set(&model, &mut sim, "data", 0x37);
+    tick(&mut sim);
+    assert_eq!(output(&model, &sim, "lane0"), 0xab);
+    assert_eq!(output(&model, &sim, "lane1"), 0x37);
+}
+
+#[test]
 fn data_types() {
     check_fixture("data_types");
     let model = fixture("data_types", false);
@@ -804,8 +824,77 @@ fn aggregate_constants_preserve_wide_signed_and_default_integer_literals() {
 }
 
 #[test]
+fn array_creation_preserves_element_order_and_nested_aggregate_types() {
+    let model = source(
+        r#"hw.module @m(in %clk: i1, in %a: i4, in %b: i4, in %idx: i1, in %record: !hw.struct<hi: i4, lo: i4>, in %overlay: !hw.union<raw: i8, low: i4>, out array: !hw.array<2xi4>, out matrix: !hw.array<2xarray<2xi4>>, out singleton: !hw.array<1xi4>, out selected: i4, out records: !hw.array<2xstruct<hi: i4, lo: i4>>, out overlays: !hw.array<2xunion<raw: i8, low: i4>>) {
+        %matrix = hw.array_create %array, %later : !hw.array<2xi4>
+        %array = hw.array_create %b, %a : i4 -> !hw.array<2xi4>
+        %later = hw.array_create %a, %b : i4
+        %singleton = hw.array_create %a : i4
+        %selected = hw.array_get %array[%idx] : !hw.array<2xi4>, i1
+        %records = hw.array_create %record, %record : !hw.struct<hi: i4, lo: i4>
+        %overlays = hw.array_create %overlay, %overlay : !hw.union<raw: i8, low: i4>
+        hw.output %array, %matrix, %singleton, %selected, %records, %overlays : !hw.array<2xi4>, !hw.array<2xarray<2xi4>>, !hw.array<1xi4>, i4, !hw.array<2xstruct<hi: i4, lo: i4>>, !hw.array<2xunion<raw: i8, low: i4>>
+    }"#,
+    );
+    model.fsm.verify(VerifyOrdering::Verify);
+    let mut sim = simulator(&model);
+    set(&model, &mut sim, "record", 0xab);
+    set(&model, &mut sim, "overlay", 0xcd);
+    for a in 0..16 {
+        for b in 0..16 {
+            for idx in 0..2 {
+                set(&model, &mut sim, "a", a);
+                set(&model, &mut sim, "b", b);
+                set(&model, &mut sim, "idx", idx);
+                sim.eval();
+                assert_eq!(output(&model, &sim, "array"), b << 4 | a);
+                assert_eq!(
+                    output(&model, &sim, "matrix"),
+                    b << 12 | a << 8 | a << 4 | b
+                );
+                assert_eq!(output(&model, &sim, "singleton"), a);
+                assert_eq!(
+                    output(&model, &sim, "selected"),
+                    if idx == 0 { a } else { b }
+                );
+            }
+        }
+    }
+    assert_eq!(output(&model, &sim, "records"), 0xabab);
+    assert_eq!(output(&model, &sim, "overlays"), 0xcdcd);
+    for bit in &model.outputs[0].bits {
+        let input_index = if bit.index < 4 { 0 } else { 1 };
+        assert_eq!(
+            bit.value,
+            model.inputs[input_index].bits[(bit.index % 4) as usize].value
+        );
+    }
+}
+
+#[test]
 fn malformed_graphs_return_positioned_errors() {
     let cases = [
+        (
+            "hw.module @m(in %clk: i1, in %a: i4, in %b: i8) { %r = hw.array_create %a, %b : i4 hw.output }",
+            "operand/element type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i4) { %r = hw.array_create %a : i4 -> !hw.array<2xi4> hw.output }",
+            "count mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i4) { %r = hw.array_create %a : i4 -> !hw.array<1xi8> hw.output }",
+            "operand/element type mismatch",
+        ),
+        (
+            "hw.module @m(in %clk: i1, in %a: i4) { %r = hw.array_create %a : i4 -> i4 hw.output }",
+            "result must be an array",
+        ),
+        (
+            "hw.module @m(in %clk: i1) { %r = hw.array_create %missing, %missing : !hw.array<18446744073709551615xi1> hw.output }",
+            "array width overflow",
+        ),
         (
             "hw.module @m(in %clk: i1) { %r = hw.aggregate_constant [1 : i4] : i4 hw.output }",
             "requires an array or struct",
@@ -1018,6 +1107,22 @@ fn mutated_ast_is_validated_without_panicking() {
     };
     module.body.as_mut().unwrap()[0].results.clear();
     assert!(NamedFsm::from_ast(&ast, &options(None)).is_err());
+    let mut ast = parse(
+        0,
+        "hw.module @m(in %clk: i1, in %a: i4) { %r = hw.array_create %a : i4 hw.output }",
+    )
+    .unwrap();
+    let parser_circt::ast::Item::HwModule(module) = &mut ast.items[0] else {
+        unreachable!()
+    };
+    let parser_circt::ast::OperationKind::ArrayCreate { operands, .. } =
+        &mut module.body.as_mut().unwrap()[0].kind
+    else {
+        unreachable!()
+    };
+    operands.clear();
+    let error = NamedFsm::from_ast(&ast, &options(None)).unwrap_err();
+    assert!(error.to_string().contains("at least one operand"));
 }
 
 #[test]
